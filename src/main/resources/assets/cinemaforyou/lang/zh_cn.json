@@ -1,0 +1,23 @@
+{
+  "item.cinemaforyou.cinema_selector": "影院选择器",
+  "item.cinemaforyou.cinema_selector.tooltip.1": "右键两个对角方块确定屏幕区域",
+  "item.cinemaforyou.cinema_selector.tooltip.2": "第二次点击将打开 URL 输入界面",
+  "key.cinemaforyou.open": "打开影院界面/屏幕控制（默认 V）",
+  "gui.cinemaforyou.url_input.title": "创建影院屏幕",
+  "gui.cinemaforyou.url_input.name": "自定义屏幕 ID（可选）",
+  "gui.cinemaforyou.url_input.url": "视频源 URL",
+  "gui.cinemaforyou.url_input.play": "▶ 播放",
+  "gui.cinemaforyou.url_input.browse": "浏览本地文件",
+  "gui.cinemaforyou.url_input.cancel": "取消",
+  "gui.cinemaforyou.url_input.settings": "⚙ 设置（游戏内按 V 可随时打开）",
+  "gui.cinemaforyou.file_select.title": "选择本地视频文件",
+  "gui.cinemaforyou.file_select.back": "返回",
+  "gui.cinemaforyou.file_select.system": "📂 打开系统文件选择器（任意目录）",
+  "gui.cinemaforyou.control.title": "屏幕控制与设置",
+  "gui.cinemaforyou.settings.title": "影院设置",
+  "gui.cinemaforyou.settings.cookies": "yt-dlp cookies 来源浏览器",
+  "gui.cinemaforyou.settings.cookies_file": "yt-dlp cookies.txt 文件路径",
+  "gui.cinemaforyou.settings.videos_dir": "本地视频目录",
+  "gui.cinemaforyou.settings.save": "✔ 保存并关闭",
+  "gui.cinemaforyou.settings.cancel": "✖ 取消"
+}

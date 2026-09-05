@@ -1,0 +1,23 @@
+{
+  "item.cinemaforyou.cinema_selector": "Cinema Selector",
+  "item.cinemaforyou.cinema_selector.tooltip.1": "Right-click two diagonal corners to define a screen",
+  "item.cinemaforyou.cinema_selector.tooltip.2": "Second click opens the URL input",
+  "key.cinemaforyou.open": "Open Cinema UI / Screen Control (default V)",
+  "gui.cinemaforyou.url_input.title": "Create Cinema Screen",
+  "gui.cinemaforyou.url_input.name": "Custom screen ID (optional)",
+  "gui.cinemaforyou.url_input.url": "Video source URL",
+  "gui.cinemaforyou.url_input.play": "▶ Play",
+  "gui.cinemaforyou.url_input.browse": "Browse local files",
+  "gui.cinemaforyou.url_input.cancel": "Cancel",
+  "gui.cinemaforyou.url_input.settings": "⚙ Settings (press V in game)",
+  "gui.cinemaforyou.file_select.title": "Select local video file",
+  "gui.cinemaforyou.file_select.back": "Back",
+  "gui.cinemaforyou.file_select.system": "📂 Open system file chooser (any folder)",
+  "gui.cinemaforyou.control.title": "Screen Controls",
+  "gui.cinemaforyou.settings.title": "Cinema Settings",
+  "gui.cinemaforyou.settings.cookies": "yt-dlp cookies browser",
+  "gui.cinemaforyou.settings.cookies_file": "yt-dlp cookies.txt file",
+  "gui.cinemaforyou.settings.videos_dir": "Local videos directory",
+  "gui.cinemaforyou.settings.save": "✔ Save & Close",
+  "gui.cinemaforyou.settings.cancel": "✖ Cancel"
+}

@@ -1,0 +1,102 @@
+plugins {
+    id 'net.fabricmc.fabric-loom' version "${loom_version}"
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+repositories {
+    mavenCentral()
+    maven {
+        name = 'Fabric'
+        url = 'https://maven.fabricmc.net/'
+    }
+}
+
+// 打包原生库的平台列表（jar-in-jar）
+def nativePlatforms = project.native_platforms.split(',')
+
+dependencies {
+    // Minecraft + Fabric（Loom 1.17 用 implementation 而非 modImplementation）
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+
+    // JavaCV / FFmpeg（jar-in-jar 打包五平台原生库，玩家单文件即可）
+    implementation "org.bytedeco:javacv:${project.javacv_version}"
+    implementation "org.bytedeco:javacpp:${project.javacv_version}"
+    implementation "org.bytedeco:ffmpeg:${project.ffmpeg_version}"
+
+    include "org.bytedeco:javacv:${project.javacv_version}"
+    include "org.bytedeco:javacpp:${project.javacv_version}"
+    include "org.bytedeco:ffmpeg:${project.ffmpeg_version}"
+
+    nativePlatforms.each { platform ->
+        include "org.bytedeco:javacpp:${project.javacv_version}:${platform}"
+        include "org.bytedeco:ffmpeg:${project.ffmpeg_version}:${platform}"
+    }
+
+    // 开发环境运行时仅需 host 平台原生库
+    def hostPlatform = getHostPlatform()
+    if (hostPlatform != null) {
+        runtimeOnly "org.bytedeco:javacpp:${project.javacv_version}:${hostPlatform}"
+        runtimeOnly "org.bytedeco:ffmpeg:${project.ffmpeg_version}:${hostPlatform}"
+    }
+}
+
+// 检测当前开发机平台，用于 runtimeOnly 原生库
+String getHostPlatform() {
+    String os = System.getProperty('os.name').toLowerCase()
+    String arch = System.getProperty('os.arch').toLowerCase()
+    String platform
+    if (os.contains('windows')) {
+        platform = arch.contains('aarch64') || arch.contains('arm64') ? null : 'windows-x86_64'
+    } else if (os.contains('linux')) {
+        platform = arch.contains('aarch64') || arch.contains('arm64') ? 'linux-arm64' : 'linux-x86_64'
+    } else if (os.contains('mac')) {
+        platform = arch.contains('aarch64') || arch.contains('arm64') ? 'macosx-arm64' : 'macosx-x86_64'
+    } else {
+        return null
+    }
+    return platform
+}
+
+processResources {
+    inputs.property 'version', project.version
+    filesMatching('fabric.mod.json') {
+        expand 'version': project.version
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    it.options.release = 25
+    it.options.encoding = 'UTF-8'
+}
+
+java {
+    // 系统可用 JDK 为 26（无 25）；用 26 编译，--release 25 保证字节码兼容
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(26)
+    }
+    withSourcesJar()
+}
+
+jar {
+    from('LICENSE') {
+        rename { "${it}_${project.base.archivesName.get()}" }
+    }
+}
+
+// 不使用 splitEnvironmentSourceSets，客户端/公共代码统一放 src/main/java，
+// 客户端专属类用 @Environment(EnvType.CLIENT) 标注，由 Fabric Loader 在服务端剥离。
+loom {
+    mods {
+        "cinemaforyou" {
+            sourceSet sourceSets.main
+        }
+    }
+}
