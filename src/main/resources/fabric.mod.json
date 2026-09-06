@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "id": "cinemaforyou",
+  "version": "${version}",
+  "name": "CinemaForYou",
+  "description": "Minecraft 26.2 Fabric 观影大屏幕模组 —— 作者 NewBeeClass。在游戏内创建可多人同步观看的视频大屏：支持本地视频文件与视频网站链接（YouTube/B 站等，经 yt-dlp 解析），音画同步、世界内位置音频与隔音、播放列表与历史、循环/自动连播、自定义打开按键等。",
+  "authors": [
+    "NewBeeClass"
+  ],
+  "contact": {
+    "homepage": "https://github.com/cinemaforyou/cinemaforyou",
+    "sources": "https://github.com/cinemaforyou/cinemaforyou",
+    "issues": "https://github.com/cinemaforyou/cinemaforyou/issues"
+  },
+  "license": "LGPL-3.0-only",
+  "icon": "assets/cinemaforyou/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "com.cinemaforyou.CinemaForYou"
+    ],
+    "client": [
+      "com.cinemaforyou.CinemaForYouClient"
+    ]
+  },
+  "mixins": [
+    "cinemaforyou.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.19.3",
+    "minecraft": "~26.2",
+    "java": ">=25",
+    "fabric-api": "*"
+  },
+  "suggests": {
+    "modmenu": "*"
+  }
+}
