@@ -1,0 +1,18 @@
+{
+  "parent": "minecraft:item/generated",
+  "textures": {
+    "layer0": "cinemaforyou:item/cinema_selector"
+  },
+  "display": {
+    "firstperson_righthand": {
+      "rotation": [ 0, -90, 25 ],
+      "translation": [ 0, 2, 0 ],
+      "scale": [ 1, 1, 1 ]
+    },
+    "thirdperson_righthand": {
+      "rotation": [ 45, -90, 25 ],
+      "translation": [ 0, 2, 0 ],
+      "scale": [ 1, 1, 1 ]
+    }
+  }
+}
