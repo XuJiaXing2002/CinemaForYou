@@ -211,6 +211,34 @@ public class CinemaSettingsScreen extends ScrollableSettingsScreen {
         ).bounds(cx - 155, ry(y) + 18, 150, 15).build());
         y += rowH + 18;
 
+        // ── yt-dlp 网络代理（TikTok 等直连不通的站点用） ──
+        String proxyVal = CinemaForYouClient.clientConfig != null
+                ? CinemaForYouClient.clientConfig.ytDlpProxy : "";
+        final String[] proxyRef = {proxyVal};
+        Button proxyBtn = Button.builder(
+                Component.literal("网络代理(yt-dlp): "
+                        + (proxyRef[0] == null || proxyRef[0].isEmpty()
+                            ? "§7直连（TikTok 等被墙站点需填代理）"
+                            : "§a" + proxyRef[0])),
+                btn -> {
+                    if (CinemaForYouClient.clientConfig == null) return;
+                    openChild(new InputValueScreen(
+                            "yt-dlp 代理地址（留空=直连）",
+                            proxyRef[0],
+                            120,
+                            v -> {
+                                CinemaForYouClient.clientConfig.ytDlpProxy = v == null ? "" : v.trim();
+                                CinemaForYouClient.clientConfig.save();
+                                proxyRef[0] = CinemaForYouClient.clientConfig.ytDlpProxy;
+                            }));
+                }
+        ).bounds(cx - 155, ry(y), 310, 20).build();
+        addRenderableWidget(proxyBtn);
+        addRenderableWidget(new GuiTextLabel(cx - 155, ry(y) + 21, 310, 10,
+                "§7例: http://127.0.0.1:7890（Clash）或 socks5://127.0.0.1:1080",
+                GuiTextLabel.Align.LEFT, GuiTextLabel.GRAY_LIGHT));
+        y += rowH + 22;
+
         // ── 本地视频目录（文件夹浏览） ──
         videosDirField = new EditBox(this.font, 200, 16,
                 Component.translatable("gui.cinemaforyou.settings.videos_dir"));

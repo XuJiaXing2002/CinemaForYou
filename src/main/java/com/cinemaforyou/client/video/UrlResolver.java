@@ -248,6 +248,19 @@ public final class UrlResolver {
         return out;
     }
 
+    /** 配置的网络代理参数（未配置返回空列表）。 */
+    private static java.util.List<String> proxyArgs() {
+        try {
+            if (com.cinemaforyou.CinemaForYouClient.clientConfig != null) {
+                String p = com.cinemaforyou.CinemaForYouClient.clientConfig.ytDlpProxy;
+                if (p != null && !p.isBlank()) {
+                    return java.util.List.of("--proxy", p.trim());
+                }
+            }
+        } catch (Exception ignored) {}
+        return java.util.List.of();
+    }
+
     /** 判断输入是否像本地文件路径（Windows 盘符、UNC、或实际存在的相对路径）。 */
     private static boolean looksLikeLocalPath(String s) {
         if (s.matches("[A-Za-z]:[\\\\/].*")) return true;      // C:\xx 或 C:/xx
@@ -343,6 +356,7 @@ public final class UrlResolver {
         try {
             List<String> cmd = new ArrayList<>();
             cmd.add(ytDlp.getAbsolutePath());
+            cmd.addAll(proxyArgs()); // 可选代理：TikTok 等直连不通的站点
             cmd.add("--no-warnings");
             cmd.add("--no-playlist");
             cmd.add("--force-ipv4");
@@ -495,7 +509,11 @@ public final class UrlResolver {
      */
     public record ResolvedSource(String videoUrl, String audioUrl) {}
 
-    /** 调用 yt-dlp 解析为直链（浏览器 Cookie 读取失败时自动以无 Cookie 重试一次）。 */
+    /**
+     * 调用 yt-dlp 解析为直链，带多级 cookies 回退链：
+     * ① cookies.txt（或浏览器）→ ② 浏览器 cookies（当 ① 用的是文件且也配置了浏览器）
+     * → ③ 无 cookie（仅当前两次失败疑似 cookie 相关：412/登录要求/DPAPI 等）。
+     */
     private static ResolvedSource resolveWithYtDlp(String url) {
         File ytDlp = findYtDlpBinary();
         if (ytDlp == null || !ytDlp.exists()) {
@@ -504,16 +522,30 @@ public final class UrlResolver {
             return null;
         }
 
+        boolean haveFile = false;
+        boolean haveBrowser = false;
+        try {
+            java.nio.file.Path f = getCookiesFile();
+            haveFile = f != null && java.nio.file.Files.exists(f);
+        } catch (Exception ignored) {}
+        String br = getCookiesFromBrowser();
+        haveBrowser = br != null && !br.isBlank();
+
         for (String formatSelector : selectFormats(url.toLowerCase())) {
-            String[] urls = runYtDlp(ytDlp, url, true, formatSelector);
-            if (urls != null) {
-                return toResolvedSource(urls, url);
+            String[] urls = runYtDlp(ytDlp, url, 0, formatSelector);
+            if (urls != null) return toResolvedSource(urls, url);
+            if (haveFile && haveBrowser) {
+                // cookies.txt 缺少该站条目（如导出的域不全）时改用浏览器 cookies
+                urls = runYtDlp(ytDlp, url, 1, formatSelector);
+                if (urls != null) {
+                    lastError = null;
+                    LOGGER.info("[CinemaForYou] 浏览器 cookies 重试成功: {}", trimForLog(url));
+                    return toResolvedSource(urls, url);
+                }
             }
-            if (lastRunCookieDecryptFail) {
-                // Chrome/Edge 127+ App-Bound 加密导致 --cookies-from-browser 失败：
-                // 无 Cookie 重试一次，未限制视频仍可播放
-                LOGGER.warn("[CinemaForYou] 浏览器 Cookie 读取失败（DPAPI），尝试无 Cookie 重试");
-                urls = runYtDlp(ytDlp, url, false, formatSelector);
+            if (lastErrorLooksCookieish()) {
+                // 412/登录要求/DPAPI 等：去掉 cookies 让 yt-dlp 自行取新身份
+                urls = runYtDlp(ytDlp, url, 2, formatSelector);
                 if (urls != null) {
                     lastError = null;
                     LOGGER.info("[CinemaForYou] 无 Cookie 重试成功（该视频无需登录）");
@@ -522,6 +554,17 @@ public final class UrlResolver {
             }
         }
         return null;
+    }
+
+    /** 最近一次失败是否疑似 cookie/登录相关（值得去掉 cookies 再试）。 */
+    private static boolean lastErrorLooksCookieish() {
+        String e = lastError;
+        if (e == null) return false;
+        String low = e.toLowerCase();
+        return low.contains("412") || low.contains("precondition")
+                || low.contains("sign in") || low.contains("login required")
+                || low.contains("dpapi") || low.contains("decrypt")
+                || lastRunCookieDecryptFail;
     }
 
     /** 把 yt-dlp 输出的 URL 行转换为视频/音频直链对。 */
@@ -537,12 +580,16 @@ public final class UrlResolver {
         return new ResolvedSource(video, audio);
     }
 
-    /** 单次 yt-dlp 运行。withCookies=false 时不携带任何 cookie 参数。 */
-    private static String[] runYtDlp(File ytDlp, String url, boolean withCookies, String formatSelector) {
+    /**
+     * 单次 yt-dlp 运行。cookiesMode：0=cookies.txt 优先（无文件则浏览器），
+     * 1=仅浏览器 cookies，2=不带任何 cookie。
+     */
+    private static String[] runYtDlp(File ytDlp, String url, int cookiesMode, String formatSelector) {
         lastRunCookieDecryptFail = false;
         try {
             List<String> cmd = new ArrayList<>();
             cmd.add(ytDlp.getAbsolutePath());
+            cmd.addAll(proxyArgs()); // 可选代理：TikTok 等直连不通的站点
             cmd.add("--no-warnings");
             cmd.add("--no-playlist");
             cmd.add("--prefer-free-formats");
@@ -551,12 +598,13 @@ public final class UrlResolver {
             cmd.add("--user-agent");
             cmd.add("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                     + "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
-            // cookies：cookies.txt 文件优先（Chrome/Edge 127+ App-Bound 加密
-            // 导致 --cookies-from-browser 报 "Failed to decrypt with DPAPI"，
-            // 见 yt-dlp #10927）
-            if (withCookies) {
+            // cookies 来源选择：cookies.txt 文件优先（Chrome/Edge 127+ App-Bound
+            // 加密导致 --cookies-from-browser 报 DPAPI 错误，见 yt-dlp #10927）
+            if (cookiesMode == 0 || cookiesMode == 1) {
                 java.nio.file.Path cookiesFile = getCookiesFile();
-                if (cookiesFile != null && java.nio.file.Files.exists(cookiesFile)) {
+                boolean useFile = cookiesMode == 0
+                        && cookiesFile != null && java.nio.file.Files.exists(cookiesFile);
+                if (useFile) {
                     cmd.add("--cookies");
                     cmd.add(cookiesFile.toAbsolutePath().toString());
                 } else {
@@ -585,7 +633,7 @@ public final class UrlResolver {
             debugPoint("A", "UrlResolver.runYtDlp:189",
                     "[DEBUG] yt-dlp command prepared",
                     "url", trimForLog(url),
-                    "withCookies", withCookies,
+                    "cookiesMode", cookiesMode,
                     "format", formatSelector,
                     "binary", ytDlp.getAbsolutePath());
             // #endregion
@@ -629,7 +677,7 @@ public final class UrlResolver {
                 debugPoint("A", "UrlResolver.runYtDlp:225",
                         "[DEBUG] yt-dlp failed",
                         "url", trimForLog(url),
-                        "withCookies", withCookies,
+                        "cookiesMode", cookiesMode,
                         "exit", exit,
                         "format", formatSelector,
                         "stderr", trimForLog(errTail),
@@ -658,7 +706,7 @@ public final class UrlResolver {
             debugPoint("A", "UrlResolver.runYtDlp:yt-dlp-success",
                     "[DEBUG] yt-dlp resolved direct urls",
                     "url", trimForLog(url),
-                    "withCookies", withCookies,
+                    "cookiesMode", cookiesMode,
                     "format", formatSelector,
                     "urlCount", urls.length,
                     "resolvedVideo", trimForLog(urls[0]),
@@ -673,7 +721,7 @@ public final class UrlResolver {
             debugPoint("A", "UrlResolver.runYtDlp:254",
                     "[DEBUG] yt-dlp exception",
                     "url", trimForLog(url),
-                    "withCookies", withCookies,
+                    "cookiesMode", cookiesMode,
                     "error", String.valueOf(e));
             // #endregion
             fail("yt-dlp 执行异常: " + e.getMessage());

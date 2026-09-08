@@ -84,6 +84,15 @@ public class ClientConfig {
      */
     public String ytDlpCookiesFile = "";
 
+    /**
+     * yt-dlp 网络代理地址（可选，留空 = 直连）。
+     *
+     * <p>用于 TikTok 等直连不通/被墙的站点：填上代理软件提供的本地端口即可，
+     * 例如 {@code http://127.0.0.1:7890}（Clash 默认）或 socks5 代理
+     * {@code socks5://127.0.0.1:1080}。解析时作为 {@code --proxy} 传给 yt-dlp。
+     */
+    public String ytDlpProxy = "";
+
     /** 是否显示对角点选择预览框（第一点选定后实时显示范围）。 */
     public boolean showSelectionBox = true;
 
