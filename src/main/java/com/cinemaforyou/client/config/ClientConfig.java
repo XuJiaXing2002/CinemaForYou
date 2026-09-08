@@ -331,6 +331,9 @@ public class ClientConfig {
             if (instance.screenPlaylist == null) instance.screenPlaylist = new java.util.HashMap<>();
             if (instance.urlNotes == null) instance.urlNotes = new java.util.HashMap<>();
             if (instance.urlTitles == null) instance.urlTitles = new java.util.HashMap<>();
+            // 清理旧版编码错误缓存的乱码标题（含 U+FFFD 替换符），触发重新抓取
+            instance.urlTitles.entrySet().removeIf(
+                    e -> e.getValue() == null || e.getValue().contains("\uFFFD"));
             if (instance.history == null) instance.history = new java.util.ArrayList<>();
             LOGGER.info("[CinemaForYou] 客户端配置已加载: {}", file);
         } catch (IOException e) {
