@@ -283,12 +283,63 @@ public final class UrlResolver {
      *
      * <p>仅供后台标题缓存使用（见 VideoTitleResolver）；解析失败一律返回
      * null，不抛异常、不写 lastError（避免干扰播放路径的错误提示）。
+     *
+     * <p>失败重试策略：若配置了 cookies 且失败疑似 cookie 相关（B站 412
+     * 风控/浏览器解密失败等），自动去掉 cookies 重试一次——cookies.txt 里的
+     * buvid 过期时反而会触发 412，无 cookie 让 yt-dlp 现取新 buvid 常可成功。
      */
     public static String fetchTitle(String sourceUrl) {
         String url = sourceUrl == null ? null : sourceUrl.trim();
         if (url == null || !needsWebTitle(url)) return null;
         File ytDlp = findYtDlpBinary();
         if (ytDlp == null || !ytDlp.exists()) return null;
+        boolean withCookies = hasCookiesConfigured();
+        TitleAttempt first = runTitleAttempt(ytDlp, url, withCookies);
+        if (first.title != null) {
+            return first.title;
+        }
+        if (withCookies && looksCookieRelated(first.errLower)) {
+            TitleAttempt second = runTitleAttempt(ytDlp, url, false);
+            if (second.title != null) {
+                LOGGER.info("[CinemaForYou] 标题抓取成功（无 cookie 重试）: {}", trimForLog(url));
+                return second.title;
+            }
+            LOGGER.warn("[CinemaForYou] 标题抓取失败 url={}（带cookie原因: {}；无cookie原因: {}）",
+                    trimForLog(url), trimForLog(first.errTail), trimForLog(second.errTail));
+            return null;
+        }
+        LOGGER.warn("[CinemaForYou] 标题抓取失败 url={}: {}", trimForLog(url),
+                trimForLog(first.errTail));
+        return null;
+    }
+
+    /** 是否配置了 cookies（cookies.txt 文件存在，或指定了浏览器）。 */
+    private static boolean hasCookiesConfigured() {
+        try {
+            if (com.cinemaforyou.CinemaForYouClient.clientConfig == null) return false;
+            java.nio.file.Path f = com.cinemaforyou.CinemaForYouClient.clientConfig.resolveCookiesFile();
+            if (f != null && java.nio.file.Files.exists(f)) return true;
+            String b = com.cinemaforyou.CinemaForYouClient.clientConfig.ytDlpCookiesFromBrowser;
+            return b != null && !b.isBlank();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** 错误是否疑似 cookie 相关（值得去掉 cookies 重试）。 */
+    private static boolean looksCookieRelated(String errLower) {
+        if (errLower == null) return false;
+        return errLower.contains("412") || errLower.contains("precondition")
+                || errLower.contains("dpapi") || errLower.contains("decrypt")
+                || errLower.contains("cookiejar") || errLower.contains("sign in")
+                || errLower.contains("login required");
+    }
+
+    /** 一次标题抓取尝试的结果。 */
+    private record TitleAttempt(String title, String errLower, String errTail) {}
+
+    /** 单次 yt-dlp 标题抓取（withCookies=false 时不带任何 cookie 参数）。 */
+    private static TitleAttempt runTitleAttempt(File ytDlp, String url, boolean withCookies) {
         try {
             List<String> cmd = new ArrayList<>();
             cmd.add(ytDlp.getAbsolutePath());
@@ -302,15 +353,17 @@ public final class UrlResolver {
             cmd.add("--user-agent");
             cmd.add("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                     + "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
-            java.nio.file.Path cookiesFile = getCookiesFile();
-            if (cookiesFile != null && java.nio.file.Files.exists(cookiesFile)) {
-                cmd.add("--cookies");
-                cmd.add(cookiesFile.toAbsolutePath().toString());
-            } else {
-                String cookiesFrom = getCookiesFromBrowser();
-                if (cookiesFrom != null && !cookiesFrom.isBlank()) {
-                    cmd.add("--cookies-from-browser");
-                    cmd.add(cookiesFrom.trim());
+            if (withCookies) {
+                java.nio.file.Path cookiesFile = getCookiesFile();
+                if (cookiesFile != null && java.nio.file.Files.exists(cookiesFile)) {
+                    cmd.add("--cookies");
+                    cmd.add(cookiesFile.toAbsolutePath().toString());
+                } else {
+                    String cookiesFrom = getCookiesFromBrowser();
+                    if (cookiesFrom != null && !cookiesFrom.isBlank()) {
+                        cmd.add("--cookies-from-browser");
+                        cmd.add(cookiesFrom.trim());
+                    }
                 }
             }
             String lowerUrl = url.toLowerCase();
@@ -331,7 +384,7 @@ public final class UrlResolver {
             if (!p.waitFor(20, java.util.concurrent.TimeUnit.SECONDS)) {
                 p.destroyForcibly();
                 LOGGER.debug("[CinemaForYou] 标题抓取超时，已终止: {}", trimForLog(url));
-                return null;
+                return new TitleAttempt(null, "", "timeout");
             }
             byte[] outBytes = p.getInputStream().readAllBytes();
             StringBuilder errBuf = new StringBuilder();
@@ -345,19 +398,20 @@ public final class UrlResolver {
             }
             int exit = p.exitValue();
             if (exit != 0 || outBytes.length == 0) {
-                LOGGER.debug("[CinemaForYou] 标题抓取失败 url={} exit={} err={}",
-                        trimForLog(url), exit, trimForLog(errBuf.toString()));
-                return null;
+                String errTail = errBuf.toString();
+                LOGGER.debug("[CinemaForYou] 标题抓取失败 url={} cookies={} exit={} err={}",
+                        trimForLog(url), withCookies, exit, trimForLog(errTail));
+                return new TitleAttempt(null, errTail.toLowerCase(), errTail);
             }
             // Windows 管道下 yt-dlp 可能仍按 GBK/ANSI 输出：先严格按 UTF-8 解，
             // 失败（含大量替换符）则回退 GBK 再解，保证中文标题不乱码
             String title = decodeTitleBytes(outBytes);
             title = title.trim().replace("\u00a7", "").replace('§', ' ');
             if (title.length() > 120) title = title.substring(0, 120);
-            return title.isEmpty() ? null : title;
+            return new TitleAttempt(title.isEmpty() ? null : title, "", "");
         } catch (Exception e) {
             LOGGER.debug("[CinemaForYou] 标题抓取异常 url={}: {}", trimForLog(url), e.toString());
-            return null;
+            return new TitleAttempt(null, "", String.valueOf(e));
         }
     }
 
