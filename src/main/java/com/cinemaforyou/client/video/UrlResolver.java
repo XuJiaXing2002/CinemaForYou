@@ -49,6 +49,17 @@ public final class UrlResolver {
     private static final Pattern DIRECT_STREAM =
             Pattern.compile(".*\\.(m3u8|mpd)(\\?.*)?$", Pattern.CASE_INSENSITIVE);
 
+    /** 网页直链探测：页面源码里的 m3u8 播放地址。 */
+    private static final Pattern HTML_M3U8 =
+            Pattern.compile("https?://[^\"'<>\\s]+?\\.m3u8[^\"'<>\\s]*",
+                    Pattern.CASE_INSENSITIVE);
+
+    /** 网页直链探测：页面源码里的 mp4/flv 等整片文件地址。 */
+    private static final Pattern HTML_MP4 =
+            Pattern.compile("https?://[^\"'<>\\s]+?\\.(?:mp4|flv|mkv|webm|mov)"
+                            + "(?:\\?[^\"'<>\\s]*)?",
+                    Pattern.CASE_INSENSITIVE);
+
     private UrlResolver() {}
 
     /** 最近一次解析失败的原因（成功后清空），用于向玩家展示具体错误。 */
@@ -125,7 +136,116 @@ public final class UrlResolver {
         }
 
         // 其它（YouTube/B站/Twitch 等）：用 yt-dlp 解析
-        return resolveWithYtDlp(s);
+        ResolvedSource resolved = resolveWithYtDlp(s);
+        if (resolved != null) {
+            return resolved;
+        }
+        // yt-dlp 不支持的站（苹果CMS 等小站）：直接抓页面找 m3u8/mp4 直链兜底。
+        // Referer 由调用方按原始页面 URL 生成（ffmpegHttpHeaders），满足防盗链。
+        String firstError = getLastError();
+        ResolvedSource probed = probePageForDirect(s);
+        if (probed != null) {
+            lastError = null;
+            LOGGER.info("[CinemaForYou] 页面直链探测成功: {} → {}",
+                    trimForLog(s), trimForLog(probed.videoUrl()));
+            return probed;
+        }
+        fail((firstError == null ? "页面无直链" : firstError)
+                + "；网页直链探测也未找到可用的 m3u8/mp4"
+                + "（页面可能需要登录，或播放地址经加密/签名接口下发）");
+        return null;
+    }
+
+    /**
+     * 抓取页面 HTML，提取第一条 m3u8（优先）或 mp4/flv 直链。
+     *
+     * <p>适用：yt-dlp 不支持的小站（典型如 maccms 类站点把真实流地址写进
+     * 播放页脚本）。签名/时效地址、需登录的视频会失败（返回 null）。
+     */
+    private static ResolvedSource probePageForDirect(String url) {
+        try {
+            java.net.HttpURLConnection c = (java.net.HttpURLConnection)
+                    new java.net.URL(url).openConnection();
+            c.setConnectTimeout(8_000);
+            c.setReadTimeout(15_000);
+            c.setInstanceFollowRedirects(true);
+            c.setRequestProperty("User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                            + "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
+            c.setRequestProperty("Accept",
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+            int code = c.getResponseCode();
+            if (code != 200) {
+                c.disconnect();
+                LOGGER.debug("[CinemaForYou] 页面探测 HTTP {}: {}", code, trimForLog(url));
+                return null;
+            }
+            byte[] body;
+            try (java.io.InputStream in = c.getInputStream()) {
+                body = in.readNBytes(4 * 1024 * 1024); // 最多 4MB，够找播放地址
+            } finally {
+                c.disconnect();
+            }
+            String html = decodeHtmlBytes(body);
+            // 页面脚本里常出现 \/ 转义与 &amp; 实体
+            html = html.replace("\\/", "/").replace("\\u002F", "/");
+            html = htmlDecodeEntities(html);
+            java.util.List<String> m3u8s = new ArrayList<>();
+            java.util.List<String> mp4s = new ArrayList<>();
+            java.util.regex.Matcher m = HTML_M3U8.matcher(html);
+            while (m.find()) m3u8s.add(m.group());
+            java.util.regex.Matcher m2 = HTML_MP4.matcher(html);
+            while (m2.find()) {
+                String cand = m2.group();
+                if (cand.toLowerCase().contains("logo")) continue;
+                mp4s.add(cand);
+            }
+            String pick = null;
+            if (!m3u8s.isEmpty()) {
+                pick = m3u8s.get(0);
+            } else if (!mp4s.isEmpty()) {
+                // 多个清晰度时通常带签名参数的最长 URL 是主片源
+                for (String cand : mp4s) {
+                    if (pick == null || cand.length() > pick.length()) pick = cand;
+                }
+            }
+            if (pick == null) return null;
+            // 处理可能残余的 html 实体（如 &#47;）
+            pick = htmlDecodeEntities(pick.trim());
+            if (!pick.startsWith("http")) return null;
+            LOGGER.info("[CinemaForYou] 页面直链探测命中: {}", trimForLog(pick));
+            return new ResolvedSource(pick, pick);
+        } catch (Exception e) {
+            LOGGER.debug("[CinemaForYou] 页面直链探测异常: {} → {}", trimForLog(url), e.toString());
+            return null;
+        }
+    }
+
+    /** 页面字节解码：UTF-8 严格解码失败回退 GBK（中文小站常见）。 */
+    private static String decodeHtmlBytes(byte[] raw) {
+        try {
+            java.nio.charset.CharsetDecoder dec = StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT);
+            String s = dec.decode(java.nio.ByteBuffer.wrap(raw)).toString();
+            return s.contains("\uFFFD") ? gbkDecode(raw) : s;
+        } catch (java.nio.charset.CharacterCodingException e) {
+            return gbkDecode(raw);
+        }
+    }
+
+    /** 常见 HTML 实体解码（&amp; &quot; &lt; &gt; &#NN; &#xHH;）。 */
+    private static String htmlDecodeEntities(String s) {
+        if (s == null || s.isEmpty()) return s;
+        String out = s.replace("&amp;", "&").replace("&quot;", "\"")
+                .replace("&#39;", "'").replace("&apos;", "'")
+                .replace("&lt;", "<").replace("&gt;", ">")
+                .replace("&nbsp;", " ");
+        out = Pattern.compile("&#x([0-9a-fA-F]+);").matcher(out)
+                .replaceAll(m -> String.valueOf((char) Integer.parseInt(m.group(1), 16)));
+        out = Pattern.compile("&#(\\d+);").matcher(out)
+                .replaceAll(m -> String.valueOf((char) Integer.parseInt(m.group(1))));
+        return out;
     }
 
     /** 判断输入是否像本地文件路径（Windows 盘符、UNC、或实际存在的相对路径）。 */
