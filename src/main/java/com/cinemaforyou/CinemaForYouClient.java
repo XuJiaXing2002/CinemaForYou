@@ -134,6 +134,9 @@ public class CinemaForYouClient implements ClientModInitializer {
             YtDlpDownloader.ensureDownloadedAsync();
         }
 
+        // 6b. 后台准备 FFmpeg 解码原生库（瘦身版按需下载，解码线程会等它就绪）
+        com.cinemaforyou.client.video.NativeRuntime.startBackground();
+
         CLIENT_LOGGER.info("[CinemaForYou] 客户端初始化完成");
     }
 }

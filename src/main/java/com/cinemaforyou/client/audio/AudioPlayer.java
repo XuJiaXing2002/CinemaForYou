@@ -316,6 +316,11 @@ public class AudioPlayer {
 
     private void decodeLoop(long startPosMs) {
         try {
+            // 瘦身版：natives 由 NativeRuntime 按需下载并注册，这里等它就绪
+            if (!com.cinemaforyou.client.video.NativeRuntime.ensureBlocking()) {
+                throw new RuntimeException("ffmpeg natives unavailable: "
+                        + com.cinemaforyou.client.video.NativeRuntime.failureReason());
+            }
             grabber = new FFmpegFrameGrabber(resolvedUrl);
             String headers = com.cinemaforyou.client.video.UrlResolver.ffmpegHttpHeaders(
                     sourceUrl, resolvedUrl);

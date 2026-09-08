@@ -544,6 +544,11 @@ public class VideoPlayer {
 
     /** 创建并配置好抓帧器（未 start）。同一配置在重开解码流时复用。 */
     private FFmpegFrameGrabber openConfiguredGrabber(String url) throws Exception {
+        // 瘦身版：natives 由 NativeRuntime 按需下载并注册，这里等它就绪
+        if (!NativeRuntime.ensureBlocking()) {
+            throw new Exception("ffmpeg natives unavailable: "
+                    + NativeRuntime.failureReason());
+        }
         FFmpegFrameGrabber g = new FFmpegFrameGrabber(url);
         g.setOption("rtsp_transport", "tcp");
         // 强制 BGR24，解码线程直接按 B/G/R 字节序手工转 ABGR

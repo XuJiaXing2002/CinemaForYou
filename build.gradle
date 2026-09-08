@@ -17,7 +17,7 @@ repositories {
     }
 }
 
-// 打包原生库的平台列表（jar-in-jar）
+// 打包原生库的平台列表（jar-in-jar；仅 bundle_natives=true 时生效）
 def nativePlatforms = project.native_platforms.split(',')
 
 dependencies {
@@ -26,7 +26,7 @@ dependencies {
     implementation "net.fabricmc:fabric-loader:${project.loader_version}"
     implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
 
-    // JavaCV / FFmpeg（jar-in-jar 打包五平台原生库，玩家单文件即可）
+    // JavaCV / FFmpeg（核心 jar-in-jar 体积 ~1.5MB）
     implementation "org.bytedeco:javacv:${project.javacv_version}"
     implementation "org.bytedeco:javacpp:${project.javacv_version}"
     implementation "org.bytedeco:ffmpeg:${project.ffmpeg_version}"
@@ -35,12 +35,17 @@ dependencies {
     include "org.bytedeco:javacpp:${project.javacv_version}"
     include "org.bytedeco:ffmpeg:${project.ffmpeg_version}"
 
-    nativePlatforms.each { platform ->
-        include "org.bytedeco:javacpp:${project.javacv_version}:${platform}"
-        include "org.bytedeco:ffmpeg:${project.ffmpeg_version}:${platform}"
+    // 默认不打包各平台原生库（jar ~5MB）：客户端首次播放时由 NativeRuntime
+    // 按需从 Maven 镜像下载本机平台 natives。需要离线单文件完整版时，
+    // 在 gradle.properties 里设 bundle_natives=true 即可恢复打包。
+    if (project.findProperty('bundle_natives') == 'true') {
+        nativePlatforms.each { platform ->
+            include "org.bytedeco:javacpp:${project.javacv_version}:${platform}"
+            include "org.bytedeco:ffmpeg:${project.ffmpeg_version}:${platform}"
+        }
     }
 
-    // 开发环境运行时仅需 host 平台原生库
+    // 开发环境运行时仅需 host 平台原生库（不打包进 jar）
     def hostPlatform = getHostPlatform()
     if (hostPlatform != null) {
         runtimeOnly "org.bytedeco:javacpp:${project.javacv_version}:${hostPlatform}"

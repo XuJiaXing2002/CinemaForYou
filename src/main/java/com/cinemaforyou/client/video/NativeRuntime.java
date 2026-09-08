@@ -1,0 +1,305 @@
+package com.cinemaforyou.client.video;
+
+import net.fabricmc.api.EnvType;
+import net.fabricmc.api.Environment;
+import net.minecraft.client.Minecraft;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.List;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+
+/**
+ * FFmpeg 解码原生库运行时保障（瘦身方案核心）。
+ *
+ * <p>自 1.0.3 起 jar 不再内置各平台 FFmpeg natives（原 121MB，现约 5MB）；
+ * 首次需要解码时，从 Maven 镜像（阿里云 → repo1 回退）下载并解压与
+ * JavaCV 严格匹配的 natives（本机平台一份，约 30MB，只下一次），随后通过
+ * JavaCPP 官方支持的系统属性（{@code org.bytedeco.javacpp.platform.linkpath /
+ * preloadpath}）注册为库搜索目录。
+ *
+ * <p>版本常量必须与 build.gradle 中的 javacv/ffmpeg 依赖版本一致，否则
+ * natives 与 JNI 绑定不匹配会崩溃。
+ */
+@Environment(EnvType.CLIENT)
+public final class NativeRuntime {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger("CinemaForYou/NativeRuntime");
+
+    private static final String JAVACPP_VERSION = "1.5.13";
+    private static final String FFMPEG_VERSION = "8.0.1-1.5.13";
+
+    /** 下载镜像（阿里云 central 对国内快；repo1 官方兜底）。 */
+    private static final List<String> MIRRORS = List.of(
+            "https://maven.aliyun.com/repository/central",
+            "https://repo1.maven.org/maven2",
+            "https://repo.maven.apache.org/maven2"
+    );
+
+    private static final Object LOCK = new Object();
+    private static volatile boolean ready = false;
+    private static volatile boolean running = false;
+    private static volatile String lastFailure = null;
+
+    private NativeRuntime() {}
+
+    /** 客户端初始化时调用：后台开始准备 natives（不阻塞）。 */
+    public static void startBackground() {
+        synchronized (LOCK) {
+            if (ready || running) return;
+            running = true;
+            Thread t = new Thread(NativeRuntime::ensureNow, "CinemaForYou-NativeRuntime");
+            t.setDaemon(true);
+            t.start();
+        }
+    }
+
+    /**
+     * 解码线程在创建 grabber 前调用：等待 natives 就绪。
+     *
+     * @return true=可直接解码；false=不可用（原因见 {@link #failureReason()}）
+     */
+    public static boolean ensureBlocking() {
+        startBackground();
+        synchronized (LOCK) {
+            if (ready) return true;
+            // 等待后台线程完成（下载有超时上限，最坏等待 ~数分钟）
+            while (running) {
+                try {
+                    LOCK.wait(2000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            return ready;
+        }
+    }
+
+    /** 最近一次失败原因（成功或未尝试时为 null）。 */
+    public static String failureReason() {
+        return lastFailure;
+    }
+
+    private static void fail(String msg) {
+        lastFailure = msg;
+        LOGGER.error("[CinemaForYou] 解码原生库不可用: {}", msg);
+    }
+
+    private static void ensureNow() {
+        try {
+            Path ffDir;
+            Path jcDir;
+            try {
+                String platform = detectPlatform();
+                Path root = nativesRoot();
+                Path ffBase = root.resolve("org/bytedeco/ffmpeg/" + platform);
+                Path jcBase = root.resolve("org/bytedeco/javacpp/" + platform);
+                prepare(platform, root, ffBase, jcBase);
+                ffDir = ffBase;
+                jcDir = jcBase;
+            } catch (Exception e) {
+                fail("解码组件准备失败: " + e.getMessage());
+                return;
+            }
+            if (!Files.isRegularFile(ffDir.resolve("jniavutil.dll"))
+                    && !Files.isRegularFile(ffDir.resolve("libjniavutil.so"))
+                    && !Files.isRegularFile(ffDir.resolve("libjniavutil.dylib"))) {
+                fail("解码组件文件缺失（目录 " + ffDir + "）");
+                return;
+            }
+            // 必须在首次使用 JavaCPP 前设置（解码线程都先过 ensureBlocking）
+            System.setProperty("org.bytedeco.javacpp.platform.linkpath",
+                    ffDir.toAbsolutePath() + java.io.File.pathSeparator
+                            + jcDir.toAbsolutePath());
+            System.setProperty("org.bytedeco.javacpp.platform.preloadpath",
+                    jcDir.toAbsolutePath() + java.io.File.pathSeparator
+                            + ffDir.toAbsolutePath());
+            synchronized (LOCK) {
+                ready = true;
+                lastFailure = null;
+            }
+            LOGGER.info("[CinemaForYou] 解码原生库就绪: {} / {}", ffDir, jcDir);
+        } catch (Throwable t) {
+            fail("解码组件准备异常: " + t);
+        } finally {
+            // 无论成败都要释放等待中的解码线程（失败时 ensureBlocking 返回 false）
+            synchronized (LOCK) {
+                running = false;
+                LOCK.notifyAll();
+            }
+        }
+    }
+
+    /** 确保 natives 已下载解压（标记文件或必需 dll 缺失时联网获取）。 */
+    private static void prepare(String platform, Path root, Path ffBase, Path jcBase)
+            throws Exception {
+        String marker = "ok-" + FFMPEG_VERSION + "-" + JAVACPP_VERSION;
+        Path markerFile = root.resolve("cinemaforyou-natives-" + platform + ".txt");
+        boolean have = Files.isRegularFile(markerFile)
+                && Files.readString(markerFile).trim().equals(marker)
+                && Files.isRegularFile(jcBase.resolve("jnijavacpp.dll"));
+        if (have) return;
+
+        LOGGER.info("[CinemaForYou] 首次使用：下载解码组件（{}，约 30MB，仅一次）...", platform);
+        // 目录不完整：清空重建
+        if (Files.exists(root)) {
+            deleteRecursively(root);
+        }
+        Files.createDirectories(jcBase);
+
+        String ffArtifact = "org/bytedeco/ffmpeg/" + FFMPEG_VERSION
+                + "/ffmpeg-" + FFMPEG_VERSION + "-" + platform + ".jar";
+        String jcArtifact = "org/bytedeco/javacpp/" + JAVACPP_VERSION
+                + "/javacpp-" + JAVACPP_VERSION + "-" + platform + ".jar";
+        Path tmp = Files.createTempDirectory("cfy-natives-");
+        try {
+            Path ffJar = tmp.resolve("ffmpeg.jar");
+            Path jcJar = tmp.resolve("javacpp.jar");
+            download(ffArtifact, ffJar);
+            download(jcArtifact, jcJar);
+            extractNatives(ffJar, root);
+            extractNatives(jcJar, root);
+            Files.writeString(markerFile, marker);
+            LOGGER.info("[CinemaForYou] 解码组件下载解压完成");
+        } finally {
+            deleteRecursively(tmp);
+        }
+    }
+
+    /** 依次尝试各镜像下载并做 SHA-1 校验（失败抛异常由上层报告）。 */
+    private static void download(String artifact, Path target) throws Exception {
+        Exception lastErr = null;
+        for (String mirror : MIRRORS) {
+            String url = mirror + "/" + artifact;
+            try {
+                Path shaTmp = target.resolveSibling(target.getFileName() + ".sha1");
+                byte[] expect = readUrlBytes(url + ".sha1", 15_000);
+                String expectHex = new String(expect, java.nio.charset.StandardCharsets.UTF_8)
+                        .trim().split("\\s+")[0].toLowerCase();
+                downloadTo(url, target);
+                String actualHex = sha1(target);
+                if (!expectHex.equals(actualHex)) {
+                    throw new IOException("SHA-1 校验失败（期望 " + expectHex + "，实际 " + actualHex + "）");
+                }
+                return;
+            } catch (Exception e) {
+                lastErr = e;
+                LOGGER.warn("[CinemaForYou] 镜像下载失败 {}: {}", url, e.toString());
+            }
+        }
+        throw new IOException("全部镜像下载失败: " + lastErr);
+    }
+
+    private static void downloadTo(String url, Path target) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        c.setConnectTimeout(10_000);
+        c.setReadTimeout(90_000);
+        c.setRequestProperty("User-Agent",
+                "Mozilla/5.0 CinemaForYou/1.0.3");
+        int code = c.getResponseCode();
+        if (code != 200) {
+            c.disconnect();
+            throw new IOException("HTTP " + code);
+        }
+        try (InputStream in = c.getInputStream();
+             OutputStream out = Files.newOutputStream(target)) {
+            in.transferTo(out);
+        } finally {
+            c.disconnect();
+        }
+    }
+
+    private static byte[] readUrlBytes(String url, int timeoutMs) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        c.setConnectTimeout(10_000);
+        c.setReadTimeout(timeoutMs);
+        c.setRequestProperty("User-Agent", "Mozilla/5.0 CinemaForYou/1.0.3");
+        int code = c.getResponseCode();
+        if (code != 200) {
+            c.disconnect();
+            throw new IOException("HTTP " + code);
+        }
+        try (InputStream in = c.getInputStream()) {
+            return in.readAllBytes();
+        } finally {
+            c.disconnect();
+        }
+    }
+
+    /** 解压 jar 里的 natives（跳过 META-INF 与目录项）。 */
+    private static void extractNatives(Path jar, Path root) throws IOException {
+        try (ZipInputStream zis = new ZipInputStream(Files.newInputStream(jar))) {
+            ZipEntry e;
+            while ((e = zis.getNextEntry()) != null) {
+                if (e.isDirectory() || e.getName().startsWith("META-INF/")) continue;
+                Path out = root.resolve(e.getName()).normalize();
+                if (!out.startsWith(root)) continue; // 防路径穿越
+                Files.createDirectories(out.getParent());
+                try (OutputStream os = Files.newOutputStream(out)) {
+                    zis.transferTo(os);
+                }
+            }
+        }
+    }
+
+    private static String sha1(Path file) throws Exception {
+        MessageDigest md = MessageDigest.getInstance("SHA-1");
+        try (InputStream in = Files.newInputStream(file)) {
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                md.update(buf, 0, n);
+            }
+        }
+        StringBuilder sb = new StringBuilder();
+        for (byte b : md.digest()) {
+            sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
+    }
+
+    private static Path nativesRoot() {
+        Minecraft mc = Minecraft.getInstance();
+        Path base = mc.gameDirectory.toPath().resolve("cinema").resolve("natives");
+        return base.resolve(detectPlatform());
+    }
+
+    /** 检测当前平台（JavaCPP 平台名）。 */
+    private static String detectPlatform() {
+        String os = System.getProperty("os.name", "").toLowerCase();
+        String arch = System.getProperty("os.arch", "").toLowerCase();
+        if (os.contains("win")) {
+            return "windows-x86_64";
+        }
+        if (os.contains("mac") || os.contains("darwin")) {
+            return (arch.contains("aarch64") || arch.contains("arm64"))
+                    ? "macosx-arm64" : "macosx-x86_64";
+        }
+        if (os.contains("linux")) {
+            return (arch.contains("aarch64") || arch.contains("arm64"))
+                    ? "linux-arm64" : "linux-x86_64";
+        }
+        throw new IllegalStateException("不支持的平台: " + os + " / " + arch);
+    }
+
+    private static void deleteRecursively(Path dir) throws IOException {
+        if (!Files.exists(dir)) return;
+        try (var walk = Files.walk(dir)) {
+            walk.sorted(java.util.Comparator.reverseOrder()).forEach(p -> {
+                try {
+                    Files.deleteIfExists(p);
+                } catch (IOException ignored) {}
+            });
+        }
+    }
+}
