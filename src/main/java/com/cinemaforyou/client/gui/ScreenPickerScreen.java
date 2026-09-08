@@ -59,12 +59,9 @@ public class ScreenPickerScreen extends ScrollableSettingsScreen {
                         ? "（空）"
                         : ClientConfig.displayNameFor(screen.sourceUrl());
                 String fullLabel = name + "  §f" + src;
-                addRenderableWidget(Button.builder(Component.literal(""),
+                addRenderableWidget(Button.builder(Component.literal(fullLabel),
                         btn -> openChild(new ScreenControlScreen(screen.id()))
                 ).bounds(left, ry(y), w, 20).build());
-                // 名称+片源整行超宽时横向滚动显示全部，不省略
-                addRenderableWidget(new MarqueeText(left, ry(y), w, 20,
-                        fullLabel, 0xFFFFFFFF));
                 y += 24;
             }
             y += 4;
