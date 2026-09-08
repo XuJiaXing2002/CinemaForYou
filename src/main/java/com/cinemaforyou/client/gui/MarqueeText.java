@@ -24,7 +24,7 @@ import net.minecraft.network.chat.Component;
 public class MarqueeText extends AbstractWidget {
 
     /** 每个字符推进的间隔（毫秒）与头/尾停顿。 */
-    private static final long STEP_MS = 70L;
+    private static final long STEP_MS = 210L;   // 每字符 210ms（≈原速的 1/3）
     private static final long PAUSE_HEAD_MS = 700L;
     private static final long PAUSE_TAIL_MS = 900L;
 
