@@ -132,10 +132,11 @@ public class ScreenAdminListScreen extends ScrollableSettingsScreen {
         String meta = "§e" + s.displayName()
                 + "§7 [" + s.width() + "x" + s.height() + "]  §f" + owner;
         if (rowVisible(y, y + 20, clipTop, clipBottom)) {
-            addRenderableWidget(Button.builder(Component.literal(""),
+            Button metaBtn = Button.builder(Component.literal(""),
                     btn -> openChild(new ScreenControlScreen(s.id())))
-                    .bounds(left, y, w, 20).build());
-            addRenderableWidget(new MarqueeText(left, y, w, 20, meta));
+                    .bounds(left, y, w, 20).build();
+            addRenderableWidget(metaBtn);
+            addRenderableWidget(new MarqueeText(left, y, w, 20, metaBtn, meta));
         }
         // 时间行
         if (rowVisible(y + 22, y + 36, clipTop, clipBottom)) {
@@ -156,7 +157,7 @@ public class ScreenAdminListScreen extends ScrollableSettingsScreen {
             descBtn.active = mine;
             addRenderableWidget(descBtn);
             // 描述超宽时悬停才滚动显示全部
-            addRenderableWidget(new MarqueeText(left, y + 42, w, 20,
+            addRenderableWidget(new MarqueeText(left, y + 42, w, 20, descBtn,
                     "描述: §f" + d));
         }
         // 操作行

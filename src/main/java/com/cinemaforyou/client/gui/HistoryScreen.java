@@ -128,11 +128,12 @@ public class HistoryScreen extends ScrollableSettingsScreen {
         int actionW = mine ? qw + nw + dw : qw + nw;
         int headW = w - actionW - 4;
         String headText = "§a▶ " + name + "  §7" + e.playerName() + " " + time;
-        // 主按钮（点击播放）+ 滚动文字层：整行超宽时悬停才滚动显示全部
-        addRenderableWidget(Button.builder(Component.literal(""),
+        // 主按钮（点击播放）+ 控制层：整行超宽时悬停才由按钮原生滚动显示全部
+        Button headBtn = Button.builder(Component.literal(""),
                 btn -> ScreenSoundSettingsScreen.playOn(screenId, e.url()))
-                .bounds(left, ry(y), headW, 20).build());
-        addRenderableWidget(new MarqueeText(left, ry(y), headW, 20, headText));
+                .bounds(left, ry(y), headW, 20).build();
+        addRenderableWidget(headBtn);
+        addRenderableWidget(new MarqueeText(left, ry(y), headW, 20, headBtn, headText));
         int x = left + w - actionW;
         addRenderableWidget(Button.builder(Component.literal("＋队列"),
                 btn -> {

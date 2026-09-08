@@ -103,14 +103,15 @@ public class VideoLibraryScreen extends Screen {
                 String url = "file:" + f.getAbsolutePath().replace('\\', '/');
                 String fullName = f.getName();
                 String name = truncate(fullName, 24);
-                addRenderableWidget(Button.builder(Component.literal(""),
+                Button playBtn = Button.builder(Component.literal(""),
                         btn -> {
                             ScreenSoundSettingsScreen.playOn(screenId, url);
                             onClose();
                         }
-                ).bounds(cx - 155, y, 196, 20).build());
+                ).bounds(cx - 155, y, 196, 20).build();
+                addRenderableWidget(playBtn);
                 // 文件名超宽时悬停才滚动显示全部
-                addRenderableWidget(new MarqueeText(cx - 155, y, 196, 20,
+                addRenderableWidget(new MarqueeText(cx - 155, y, 196, 20, playBtn,
                         "§a▶ " + fullName));
                 addRenderableWidget(Button.builder(
                         Component.literal("＋队列"),

@@ -99,14 +99,15 @@ public class ServerMediaScreen extends Screen {
             for (int i = start; i < end; i++) {
                 String name = files.get(i);
                 String url = MediaLibraryClient.sourceFor(name);
-                addRenderableWidget(Button.builder(Component.literal(""),
+                Button playBtn = Button.builder(Component.literal(""),
                         btn -> {
                             ScreenSoundSettingsScreen.playOn(screenId, url);
                             onClose();
                         }
-                ).bounds(left, y, 196, 20).build());
+                ).bounds(left, y, 196, 20).build();
+                addRenderableWidget(playBtn);
                 // 文件名超宽时悬停才滚动显示全部
-                addRenderableWidget(new MarqueeText(left, y, 196, 20,
+                addRenderableWidget(new MarqueeText(left, y, 196, 20, playBtn,
                         "§a▶ " + name));
                 addRenderableWidget(Button.builder(Component.literal("＋队列"),
                         btn -> {
