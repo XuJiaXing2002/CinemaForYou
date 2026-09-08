@@ -115,6 +115,8 @@ public class VideoPlayer {
     // ───────────── 冻结看门狗 / 重开解码流（连续快退卡死防护） ─────────────
     /** 解码流直链（resolve 结果），重开解码流时复用。 */
     private String videoResolvedUrl;
+    /** 当前流是否支持精确定位（HLS 等不可 seek 的流为 false）。 */
+    private volatile boolean seekCapable = true;
     /** 解码线程置位：请求重开解码流（seek 失败/长时间滚不到目标时）。 */
     private volatile boolean reopenRequested = false;
     /** 最近一次成功出新帧的时刻（解码线程写、渲染线程读，毫秒）。 */
@@ -297,7 +299,9 @@ public class VideoPlayer {
 
             if (startPosMs > 0) {
                 if (!safeSeek(startPosMs)) {
-                    // 流不支持 seek：从头开始播
+                    // 流不支持 seek（HLS 等）：标记后直接从流起点播放，
+                    // 且不再启用"落点超前"回溯逻辑（那套是给精确 seek 的 mp4 用的）
+                    seekCapable = false;
                     LOGGER.warn("[CinemaForYou] 起始 seek 失败，从头/当前位置播放");
                 }
                 lastSeekHandledAtMs = System.currentTimeMillis();
@@ -402,7 +406,7 @@ public class VideoPlayer {
                     // 后退 seek 会落到目标之后的关键帧），画面会冻结等音频追上来。
                     // 这里主动向更早位置再 seek（最多 4 档递减），让画面从目标处开始。
                     long firstMs = firstPtsUs / 1000L;
-                    if (firstMs > segmentStartMs + 400L && seekFixTries < 6) {
+                    if (seekCapable && firstMs > segmentStartMs + 400L && seekFixTries < 6) {
                         long[] backOffsets = {-800L, -2000L, -5000L, -12000L, -30000L, -60000L};
                         long backTarget = Math.max(0L,
                                 segmentStartMs + backOffsets[Math.min(seekFixTries, backOffsets.length - 1)]);
@@ -473,7 +477,9 @@ public class VideoPlayer {
         if (!running.get()) return; // release() 已介入：不要再开新会话
         AudioPlayer ap = new AudioPlayer(screenId, screen, resolved.audioUrl(), sourceUrl);
         audioPlayer = ap;
-        ap.start(segmentStartMs);
+        // 不可精确定位的流（HLS）：音频也从起点开始，两侧自然对齐，
+        // 避免按服务端位置起播导致永久等待/回溯死循环
+        ap.start(seekCapable ? segmentStartMs : 0L);
     }
 
     /** 标记视频 EOF；EOF 后 tick() 会等音频播完再向服务端发停止。 */
@@ -523,7 +529,9 @@ public class VideoPlayer {
     private void applySeek(long targetMs) {
         pendingSeekMs = -1L;
         if (!safeSeek(targetMs)) {
-            // 本次 seek 失败：标记重开解码流（reopen 时会再次尝试定位）
+            // 本次 seek 失败：该流不支持精确定位（HLS 等），标记后不再回溯重试
+            seekCapable = false;
+            // 标记重开解码流（reopen 时会再次尝试定位）
             reopenRequested = true;
         }
         resetSlots();
