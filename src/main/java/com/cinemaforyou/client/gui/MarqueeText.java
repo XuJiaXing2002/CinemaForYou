@@ -6,7 +6,6 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.AbstractWidget;
-import net.minecraft.network.chat.Component;
 
 /**
  * 滚动显示完整文字的标签（marquee）。
@@ -15,8 +14,8 @@ import net.minecraft.network.chat.Component;
  * 然后以约 30px/s 向左滚动，直到尾部也完整露出（停留 1 秒），再回到开头循环。
  * 宽度放得下时与普通静态文本一样直接显示。
  *
- * <p>用法：叠放在行的主按钮上方（先 add 本标签、后 add 按钮，按钮仍在最上层
- * 接收点击）；本控件不拦截鼠标事件（mouseClicked 始终返回 false）。
+ * <p>用法：叠放在行的主按钮上方（本控件不拦截鼠标事件，点击穿透到按钮）。
+ * 文字用 String 重载绘制（与按钮文字同一渲染路径）。
  */
 @Environment(EnvType.CLIENT)
 public class MarqueeText extends AbstractWidget {
@@ -27,7 +26,7 @@ public class MarqueeText extends AbstractWidget {
     private static final double SPEED_PX_PER_MS = 0.030; // ≈30px/s
     private static final int TRAIL_GAP = 36;
 
-    private final Component fullText;
+    private final String fullText;
     private final int color;
     /** 文字在控件内的垂直偏移（顶部对齐基准 y）。 */
     private final int textTop;
@@ -37,8 +36,8 @@ public class MarqueeText extends AbstractWidget {
     }
 
     public MarqueeText(int x, int y, int width, int height, String text, int color, int textTop) {
-        super(x, y, width, height, Component.literal(""));
-        this.fullText = Component.literal(text == null ? "" : text);
+        super(x, y, width, height, net.minecraft.network.chat.Component.literal(""));
+        this.fullText = text == null ? "" : text;
         this.color = color;
         this.textTop = textTop;
     }
