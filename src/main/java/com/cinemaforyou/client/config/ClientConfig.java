@@ -117,6 +117,12 @@ public class ClientConfig {
     /** 每屏播放队列（视频源 URL，按顺序自动播放；键为屏幕 UUID）。 */
     public java.util.Map<String, java.util.List<String>> screenPlaylist = new java.util.HashMap<>();
 
+    /** 链接备注（URL → 玩家自命名，历史/队列显示时优先于标题与链接）。 */
+    public java.util.Map<String, String> urlNotes = new java.util.HashMap<>();
+
+    /** 链接标题缓存（URL → 视频标题，由 yt-dlp 后台抓取后持久化，避免重复请求）。 */
+    public java.util.Map<String, String> urlTitles = new java.util.HashMap<>();
+
     /** 播放历史（全局，最新在前，最多 100 条）。 */
     public java.util.List<HistoryItem> history = new java.util.ArrayList<>();
 
@@ -138,10 +144,58 @@ public class ClientConfig {
         }
     }
 
-    /** 给 URL 生成人类可读的短名（本地文件取文件名，链接截断）。 */
+    /** 某 URL 的备注（无备注返回 null）。 */
+    public String noteFor(String url) {
+        if (url == null || urlNotes == null) return null;
+        String v = urlNotes.get(url.trim());
+        return (v == null || v.isBlank()) ? null : v;
+    }
+
+    /** 设置某 URL 的备注（空串 = 清除），并保存。 */
+    public void setNote(String url, String note) {
+        if (url == null) return;
+        if (urlNotes == null) urlNotes = new java.util.HashMap<>();
+        String key = url.trim();
+        if (note == null || note.isBlank()) {
+            urlNotes.remove(key);
+        } else {
+            urlNotes.put(key, note.trim());
+        }
+        save();
+    }
+
+    /** 某 URL 的已缓存标题（无则返回 null）。 */
+    public String titleFor(String url) {
+        if (url == null || urlTitles == null) return null;
+        String v = urlTitles.get(url.trim());
+        return (v == null || v.isBlank()) ? null : v;
+    }
+
+    /** 记录某 URL 的标题缓存（空串 = 清除），并保存。 */
+    public void setTitle(String url, String title) {
+        if (url == null) return;
+        if (urlTitles == null) urlTitles = new java.util.HashMap<>();
+        String key = url.trim();
+        String clean = title == null ? "" : title.trim();
+        if (clean.isEmpty()) {
+            urlTitles.remove(key);
+        } else {
+            urlTitles.put(key, clean);
+        }
+        save();
+    }
+
+    /** 给 URL 生成人类可读的短名（备注 → 视频标题 → 文件名/链接截断）。 */
     public static String displayNameFor(String url) {
         if (url == null) return "";
         String s = url.trim();
+        ClientConfig cfg = instance;
+        if (cfg != null) {
+            String note = cfg.noteFor(s);
+            if (note != null) return note;
+            String title = cfg.titleFor(s);
+            if (title != null) return title;
+        }
         if (s.startsWith("file:")) {
             String p = s.substring(5).replace('\\', '/');
             int slash = p.lastIndexOf('/');
@@ -275,6 +329,8 @@ public class ClientConfig {
             if (instance.screenPlayMode == null) instance.screenPlayMode = new java.util.HashMap<>();
             if (instance.defaultPlayMode < 0 || instance.defaultPlayMode > 3) instance.defaultPlayMode = 0;
             if (instance.screenPlaylist == null) instance.screenPlaylist = new java.util.HashMap<>();
+            if (instance.urlNotes == null) instance.urlNotes = new java.util.HashMap<>();
+            if (instance.urlTitles == null) instance.urlTitles = new java.util.HashMap<>();
             if (instance.history == null) instance.history = new java.util.ArrayList<>();
             LOGGER.info("[CinemaForYou] 客户端配置已加载: {}", file);
         } catch (IOException e) {
@@ -284,8 +340,9 @@ public class ClientConfig {
         return instance;
     }
 
-    /** 保存当前配置到 config/cinemaforyou-client.json（设置界面调用）。 */
-    public void save() {
+    /** 保存当前配置到 config/cinemaforyou-client.json（设置界面调用）。
+     *  同步：后台标题线程与 UI 线程可能同时写配置。 */
+    public synchronized void save() {
         Path file = FabricLoader.getInstance().getConfigDir().resolve("cinemaforyou-client.json");
         save(this, file);
     }

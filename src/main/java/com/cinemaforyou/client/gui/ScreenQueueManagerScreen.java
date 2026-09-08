@@ -2,6 +2,7 @@ package com.cinemaforyou.client.gui;
 
 import com.cinemaforyou.CinemaForYouClient;
 import com.cinemaforyou.client.config.ClientConfig;
+import com.cinemaforyou.client.video.VideoTitleResolver;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
@@ -43,6 +44,9 @@ public class ScreenQueueManagerScreen extends Screen {
     @Override
     protected void rebuildWidgets() {
         clearWidgets();
+        // 标题补全后刷新列表（备注 > 标题 > 链接 的显示规则见 ClientConfig.displayNameFor）
+        VideoTitleResolver.setListener(() ->
+                Minecraft.getInstance().execute(this::rebuildWidgets));
         int cx = this.width / 2;
         ClientConfig cfg = CinemaForYouClient.clientConfig;
         List<String> queue = (cfg != null)
@@ -70,6 +74,7 @@ public class ScreenQueueManagerScreen extends Screen {
             int y = 36;
             for (int i = start; i < end; i++) {
                 String url = queue.get(i);
+                VideoTitleResolver.request(url);
                 String name = truncate(ClientConfig.displayNameFor(url), 26);
                 Button nameBtn = Button.builder(
                         Component.literal((i + 1) + ". " + name), btn -> {}

@@ -12,7 +12,10 @@ import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtAccounter;
 import net.minecraft.nbt.NbtIo;
+import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
+import net.minecraft.network.chat.Style;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import org.slf4j.Logger;
@@ -402,14 +405,34 @@ public class ScreenManager {
         rt.lastServerTime = System.currentTimeMillis();
         rt.dirty = true;
         broadcastState(id);
-        requester.sendSystemMessage(Component.literal(
-                "§a▶ 播放: " + truncate(served ? effective : url, 60)));
+        requester.sendSystemMessage(buildPlayMessage(served ? effective : url));
         if (url.startsWith("file:") && !served) {
             requester.sendSystemMessage(Component.literal(
                     "§7提示：服务端 cinema/videos/ 下没有同名文件，只有本机客户端能看到该画面。"
                             + "想让所有人观看，请把视频放进服务器目录 cinema/videos/ 后重新播放。"));
         }
         recordPlay(requester, effective, url);
+    }
+
+    /**
+     * 播放开始聊天消息：完整显示链接（不截断），链接部分可点击跳转浏览器。
+     */
+    private static MutableComponent buildPlayMessage(String url) {
+        String shown = (url == null || url.isEmpty()) ? "<空>" : url;
+        MutableComponent msg = Component.literal("§a▶ 播放: ");
+        if (shown.startsWith("http://") || shown.startsWith("https://")) {
+            try {
+                Style link = Style.EMPTY
+                        .withUnderlined(true)
+                        .withClickEvent(new ClickEvent.OpenUrl(java.net.URI.create(shown)));
+                msg.append(Component.literal(shown).withStyle(link));
+                return msg;
+            } catch (Exception ignored) {
+                // URI 非法则退回纯文本
+            }
+        }
+        msg.append(Component.literal(shown));
+        return msg;
     }
 
     /** 记录一次播放（服务器播放历史），并顺带登记服务器媒体文件的首个播放者。 */

@@ -372,6 +372,8 @@ public class ClientScreenManager {
         if (url.equals(lastRecordedUrl.get(id))) return;
         lastRecordedUrl.put(id, url);
         cfg.addHistory(url);
+        // 播放即后台抓取标题缓存（历史/队列显示名用，只抓一次）
+        com.cinemaforyou.client.video.VideoTitleResolver.request(url);
     }
 
     // ───────────── VideoPlayer 管理 ─────────────

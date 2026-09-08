@@ -140,6 +140,109 @@ public final class UrlResolver {
     }
 
     /**
+     * 判断 URL 是否"网页页面链接"（需要 yt-dlp 才能取得标题/直链）。
+     * 本地文件、直链视频/流、服务器媒体库令牌、流协议均返回 false。
+     */
+    public static boolean needsWebTitle(String url) {
+        if (url == null) return false;
+        String s = url.trim();
+        if (s.isEmpty() || s.startsWith("file:")
+                || s.startsWith("rtsp:") || s.startsWith("rtmp:")
+                || s.startsWith("udp:") || s.startsWith("tcp:")) {
+            return false;
+        }
+        if (DIRECT_SERVER_MEDIA.matcher(s).matches()) return false;
+        if (DIRECT_VIDEO.matcher(s).matches() || DIRECT_STREAM.matcher(s).matches()) {
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * 抓取网页视频的标题（yt-dlp {@code --print %(title)s}）。
+     *
+     * <p>仅供后台标题缓存使用（见 VideoTitleResolver）；解析失败一律返回
+     * null，不抛异常、不写 lastError（避免干扰播放路径的错误提示）。
+     */
+    public static String fetchTitle(String sourceUrl) {
+        String url = sourceUrl == null ? null : sourceUrl.trim();
+        if (url == null || !needsWebTitle(url)) return null;
+        File ytDlp = findYtDlpBinary();
+        if (ytDlp == null || !ytDlp.exists()) return null;
+        try {
+            List<String> cmd = new ArrayList<>();
+            cmd.add(ytDlp.getAbsolutePath());
+            cmd.add("--no-warnings");
+            cmd.add("--no-playlist");
+            cmd.add("--force-ipv4");
+            cmd.add("--user-agent");
+            cmd.add("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    + "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
+            java.nio.file.Path cookiesFile = getCookiesFile();
+            if (cookiesFile != null && java.nio.file.Files.exists(cookiesFile)) {
+                cmd.add("--cookies");
+                cmd.add(cookiesFile.toAbsolutePath().toString());
+            } else {
+                String cookiesFrom = getCookiesFromBrowser();
+                if (cookiesFrom != null && !cookiesFrom.isBlank()) {
+                    cmd.add("--cookies-from-browser");
+                    cmd.add(cookiesFrom.trim());
+                }
+            }
+            String lowerUrl = url.toLowerCase();
+            if (lowerUrl.contains("bilibili.com") || lowerUrl.contains("b23.tv")) {
+                cmd.add("--add-headers");
+                cmd.add("Referer: https://www.bilibili.com/");
+            }
+            if (lowerUrl.contains("youtube.com") || lowerUrl.contains("youtu.be")) {
+                cmd.add("--extractor-args");
+                cmd.add("youtube:player_client=android,web");
+            }
+            cmd.add("--print");
+            cmd.add("%(title)s");
+            cmd.add(url);
+
+            Process p = new ProcessBuilder(cmd).start();
+            // 先限时等待（标题只取元数据，20 秒足够）：网络卡死时不拖住后台队列
+            if (!p.waitFor(20, java.util.concurrent.TimeUnit.SECONDS)) {
+                p.destroyForcibly();
+                LOGGER.debug("[CinemaForYou] 标题抓取超时，已终止: {}", trimForLog(url));
+                return null;
+            }
+            StringBuilder out = new StringBuilder();
+            try (BufferedReader r = new BufferedReader(
+                    new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) {
+                    if (out.length() > 0) out.append(' ');
+                    out.append(line.trim());
+                }
+            }
+            StringBuilder errBuf = new StringBuilder();
+            try (BufferedReader r = new BufferedReader(
+                    new InputStreamReader(p.getErrorStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) {
+                    if (errBuf.length() > 1500) break;
+                    errBuf.append(line).append('\n');
+                }
+            }
+            int exit = p.exitValue();
+            if (exit != 0 || out.length() == 0) {
+                LOGGER.debug("[CinemaForYou] 标题抓取失败 url={} exit={} err={}",
+                        trimForLog(url), exit, trimForLog(errBuf.toString()));
+                return null;
+            }
+            String title = out.toString().trim().replace("\u00a7", "").replace('§', ' ');
+            if (title.length() > 120) title = title.substring(0, 120);
+            return title.isEmpty() ? null : title;
+        } catch (Exception e) {
+            LOGGER.debug("[CinemaForYou] 标题抓取异常 url={}: {}", trimForLog(url), e.toString());
+            return null;
+        }
+    }
+
+    /**
      * 构造 FFmpeg 拉流所需的自定义请求头（UA + Referer）。
      *
      * <p>B站 CDN 强校验 Referer 必须为 bilibili 域，部分站点校验浏览器 UA；

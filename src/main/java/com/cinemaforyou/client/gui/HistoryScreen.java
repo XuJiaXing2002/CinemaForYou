@@ -4,6 +4,7 @@ import com.cinemaforyou.CinemaForYouClient;
 import com.cinemaforyou.client.config.ClientConfig;
 import com.cinemaforyou.client.network.ClientNetworkHandlers;
 import com.cinemaforyou.client.network.PlayLogClient;
+import com.cinemaforyou.client.video.VideoTitleResolver;
 import com.cinemaforyou.network.PlayLogActionPayload;
 import com.cinemaforyou.network.PlayLogPayload;
 import net.minecraft.client.Minecraft;
@@ -42,6 +43,8 @@ public class HistoryScreen extends ScrollableSettingsScreen {
     @Override
     protected void init() {
         PlayLogClient.setListener(() ->
+                Minecraft.getInstance().execute(this::rebuildWidgets));
+        VideoTitleResolver.setListener(() ->
                 Minecraft.getInstance().execute(this::rebuildWidgets));
         ClientNetworkHandlers.requestPlayLog();
         rebuildWidgets();
@@ -118,8 +121,11 @@ public class HistoryScreen extends ScrollableSettingsScreen {
         String name = ClientConfig.displayNameFor(e.url());
         String time = FMT.format(Instant.ofEpochMilli(e.timeMs()).atZone(ZoneId.systemDefault()));
         boolean mine = isMine(e);
-        // 单行紧凑：▶ 片源（播放者 · 时间）＋ [＋队列] [✕删除]
-        int actionW = mine ? 88 : 44;
+        // 请求补全标题（有备注/标题/直链时内部自动忽略）
+        VideoTitleResolver.request(e.url());
+        // 单行紧凑：▶ 名称（播放者 · 时间）＋ [＋队列] [✎备注] [✕删除]
+        int qw = 40, nw = 36, dw = 44;
+        int actionW = mine ? qw + nw + dw : qw + nw;
         String head = UiText.fit("§a▶ " + name + "  §7" + e.playerName() + " " + time,
                 w - actionW - 8);
         addRenderableWidget(Button.builder(Component.literal(head),
@@ -135,12 +141,25 @@ public class HistoryScreen extends ScrollableSettingsScreen {
                                 "§7[CinemaForYou] 已加入该屏播放队列"));
                     }
                 }
-        ).bounds(x, ry(y), 40, 20).build());
+        ).bounds(x, ry(y), qw, 20).build());
+        // 备注：给该视频链接起任意名字，显示时优先于标题/链接
+        addRenderableWidget(Button.builder(Component.literal("✎备注"),
+                btn -> {
+                    ClientConfig cfg = CinemaForYouClient.clientConfig;
+                    if (cfg == null) return;
+                    String url = e.url();
+                    openChild(new InputValueScreen(
+                            "为该链接写备注（显示时优先于标题/链接）",
+                            cfg.noteFor(url) == null ? "" : cfg.noteFor(url),
+                            60,
+                            v -> cfg.setNote(url, v)));
+                }
+        ).bounds(x + qw, ry(y), nw, 20).build());
         if (mine) {
             addRenderableWidget(Button.builder(Component.literal("✕"),
                     btn -> ClientNetworkHandlers.sendPlayLogAction(
                             PlayLogActionPayload.ACTION_DELETE, e.id()))
-                    .bounds(x + 44, ry(y), 44, 20).build());
+                    .bounds(x + qw + nw, ry(y), dw, 20).build());
         }
         y += 22;
         return y;
