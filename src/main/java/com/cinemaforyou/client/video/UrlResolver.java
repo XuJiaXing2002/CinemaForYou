@@ -254,7 +254,22 @@ public final class UrlResolver {
             if (com.cinemaforyou.CinemaForYouClient.clientConfig != null) {
                 String p = com.cinemaforyou.CinemaForYouClient.clientConfig.ytDlpProxy;
                 if (p != null && !p.isBlank()) {
-                    return java.util.List.of("--proxy", p.trim());
+                    String v = p.trim();
+                    // 容错：http//:7890 → http://，socks5//: → socks5://；
+                    // 裸 "127.0.0.1:7890" 自动补 http://
+                    v = v.replaceFirst("^(?i)http//:", "http://")
+                            .replaceFirst("^(?i)socks5//:", "socks5://")
+                            .replaceFirst("^(?i)socks//:", "socks5://");
+                    if (v.matches("^\\d{1,3}(\\.\\d{1,3}){3}:\\d+$")
+                            || v.matches("^localhost:\\d+$")) {
+                        v = "http://" + v;
+                    }
+                    if (v.startsWith("http://") || v.startsWith("https://")
+                            || v.startsWith("socks5://") || v.startsWith("socks4://")
+                            || v.startsWith("socks://")) {
+                        return java.util.List.of("--proxy", v);
+                    }
+                    LOGGER.warn("[CinemaForYou] 代理地址格式无法识别，已忽略: {}", v);
                 }
             }
         } catch (Exception ignored) {}
@@ -564,6 +579,7 @@ public final class UrlResolver {
         return low.contains("412") || low.contains("precondition")
                 || low.contains("sign in") || low.contains("login required")
                 || low.contains("dpapi") || low.contains("decrypt")
+                || low.contains("could not copy") || low.contains("cookie database")
                 || lastRunCookieDecryptFail;
     }
 
