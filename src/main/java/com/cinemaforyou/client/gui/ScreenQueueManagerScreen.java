@@ -77,10 +77,10 @@ public class ScreenQueueManagerScreen extends Screen {
                 VideoTitleResolver.request(url);
                 int nameW = w - 3 * 30 - 6;
                 String fullName = (i + 1) + ". " + ClientConfig.displayNameFor(url);
-                // 序号+名称（含标题/备注）：完整文字交给按钮（26.2 自带超宽滚动）
-                addRenderableWidget(Button.builder(
-                        Component.literal(fullName), btn -> {}
-                ).bounds(left, y, nameW, 20).build());
+                addRenderableWidget(Button.builder(Component.literal(""), btn -> {})
+                        .bounds(left, y, nameW, 20).build());
+                // 序号+名称（含标题/备注）：悬停才滚动显示全部
+                addRenderableWidget(new MarqueeText(left, y, nameW, 20, fullName));
 
                 int bx = left + (w - 3 * 30 - 6) + 2;
                 int fi = i;

@@ -127,12 +127,12 @@ public class HistoryScreen extends ScrollableSettingsScreen {
         int qw = 40, nw = 36, dw = 44;
         int actionW = mine ? qw + nw + dw : qw + nw;
         int headW = w - actionW - 4;
-        // 主按钮承载完整文字（标题+播放者+时间）：26.2 按钮自带超宽滚动显示，
-        // 不再用 ... 省略
         String headText = "§a▶ " + name + "  §7" + e.playerName() + " " + time;
-        addRenderableWidget(Button.builder(Component.literal(headText),
+        // 主按钮（点击播放）+ 滚动文字层：整行超宽时悬停才滚动显示全部
+        addRenderableWidget(Button.builder(Component.literal(""),
                 btn -> ScreenSoundSettingsScreen.playOn(screenId, e.url()))
                 .bounds(left, ry(y), headW, 20).build());
+        addRenderableWidget(new MarqueeText(left, ry(y), headW, 20, headText));
         int x = left + w - actionW;
         addRenderableWidget(Button.builder(Component.literal("＋队列"),
                 btn -> {

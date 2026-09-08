@@ -128,13 +128,14 @@ public class ScreenAdminListScreen extends ScrollableSettingsScreen {
         boolean mine = isMine(s);
         int clipTop = 43;
         int clipBottom = this.height - 58;
-        // 第一行：名称/尺寸/创建者（点击打开控制；完整文字交给按钮）
+        // 第一行：名称/尺寸/创建者（点击打开控制；悬停才滚动显示全部）
         String meta = "§e" + s.displayName()
                 + "§7 [" + s.width() + "x" + s.height() + "]  §f" + owner;
         if (rowVisible(y, y + 20, clipTop, clipBottom)) {
-            addRenderableWidget(Button.builder(Component.literal(meta),
+            addRenderableWidget(Button.builder(Component.literal(""),
                     btn -> openChild(new ScreenControlScreen(s.id())))
                     .bounds(left, y, w, 20).build());
+            addRenderableWidget(new MarqueeText(left, y, w, 20, meta));
         }
         // 时间行
         if (rowVisible(y + 22, y + 36, clipTop, clipBottom)) {
@@ -150,10 +151,13 @@ public class ScreenAdminListScreen extends ScrollableSettingsScreen {
         final String d = desc;
         if (rowVisible(y + 42, y + 62, clipTop, clipBottom)) {
             Button descBtn = Button.builder(
-                    Component.literal("描述: §f" + d),
+                    Component.literal(""),
                     btn -> openDescEditor(s)).bounds(left, y + 42, w, 20).build();
             descBtn.active = mine;
             addRenderableWidget(descBtn);
+            // 描述超宽时悬停才滚动显示全部
+            addRenderableWidget(new MarqueeText(left, y + 42, w, 20,
+                    "描述: §f" + d));
         }
         // 操作行
         if (rowVisible(y + 64, y + 84, clipTop, clipBottom)) {
