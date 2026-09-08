@@ -334,13 +334,10 @@ public class AudioPlayer {
                 // 停止/重播时线程堆积乃至卡死
                 grabber.setOption("rw_timeout", "15000000");
             }
-            // 媒体流代理：与视频侧一致（本地服务器媒体除外）
-            String proxy = com.cinemaforyou.client.video.UrlResolver.effectiveProxy();
-            if (proxy != null && resolvedUrl != null
-                    && (resolvedUrl.startsWith("http://") || resolvedUrl.startsWith("https://"))
-                    && !resolvedUrl.contains("127.0.0.1") && !resolvedUrl.contains("localhost")
-                    && !resolvedUrl.contains("/cinema/")) {
-                grabber.setOption("http_proxy", proxy);
+            // 媒体流代理：与视频侧一致（本地服务器媒体与 B站/抖音等直连友好站自动排除）
+            if (com.cinemaforyou.client.video.UrlResolver.proxyEnabledFor(resolvedUrl)) {
+                grabber.setOption("http_proxy",
+                        com.cinemaforyou.client.video.UrlResolver.effectiveProxy());
             }
             grabber.setSampleFormat(avutil.AV_SAMPLE_FMT_S16);
             grabber.start();

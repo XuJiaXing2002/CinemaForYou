@@ -276,10 +276,35 @@ public final class UrlResolver {
         return null;
     }
 
-    /** 配置的网络代理参数（未配置返回空列表）。 */
-    private static java.util.List<String> proxyArgs() {
-        String v = effectiveProxy();
+    /** 配置的网络代理参数（未配置返回空列表；国内直连友好的站点自动绕过）。 */
+    private static java.util.List<String> proxyArgs(String url) {
+        String v = proxyFor(url);
         return v == null ? java.util.List.of() : java.util.List.of("--proxy", v);
+    }
+
+    /**
+     * 该 URL 是否应走代理（解析/拉流共用）：
+     * 未配置代理、或目标为本地/服务器媒体/国内直连友好站（B站/抖音系）时不走。
+     */
+    public static boolean proxyEnabledFor(String url) {
+        return proxyFor(url) != null;
+    }
+
+    private static String proxyFor(String url) {
+        String v = effectiveProxy();
+        if (v == null) return null;
+        if (url != null) {
+            String l = url.toLowerCase();
+            if (l.contains("127.0.0.1") || l.contains("localhost") || l.contains("/cinema/")) {
+                return null; // 本地服务器媒体
+            }
+            // 国内直连友好：B站 CDN 与抖音系走了代理反而慢/易被境外节点拒绝
+            if (l.contains("bilibili") || l.contains("bilivideo") || l.contains("hdslb")
+                    || l.contains("douyin") || l.contains("douyinvod")) {
+                return null;
+            }
+        }
+        return v;
     }
 
     /** 判断输入是否像本地文件路径（Windows 盘符、UNC、或实际存在的相对路径）。 */
@@ -377,7 +402,7 @@ public final class UrlResolver {
         try {
             List<String> cmd = new ArrayList<>();
             cmd.add(ytDlp.getAbsolutePath());
-            cmd.addAll(proxyArgs()); // 可选代理：TikTok 等直连不通的站点
+            cmd.addAll(proxyArgs(url)); // 可选代理：TikTok 等直连不通的站点
             cmd.add("--no-warnings");
             cmd.add("--no-playlist");
             cmd.add("--force-ipv4");
@@ -611,7 +636,7 @@ public final class UrlResolver {
         try {
             List<String> cmd = new ArrayList<>();
             cmd.add(ytDlp.getAbsolutePath());
-            cmd.addAll(proxyArgs()); // 可选代理：TikTok 等直连不通的站点
+            cmd.addAll(proxyArgs(url)); // 可选代理：TikTok 等直连不通的站点
             cmd.add("--no-warnings");
             cmd.add("--no-playlist");
             cmd.add("--prefer-free-formats");
