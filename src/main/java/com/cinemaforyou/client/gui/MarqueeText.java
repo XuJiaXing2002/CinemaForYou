@@ -23,8 +23,10 @@ import net.minecraft.network.chat.Component;
 @Environment(EnvType.CLIENT)
 public class MarqueeText extends AbstractWidget {
 
-    /** 每个字符推进的间隔（毫秒）与头/尾停顿。 */
-    private static final long STEP_MS = 1890L;  // 每字符 1890ms（再慢 3 倍）
+    /** 滚动节奏：按固定像素速度推进（每字符时长 = 字宽 ÷ 速度），视觉全程匀速。 */
+    private static final double PIXEL_SPEED_PX_PER_MS = 0.010; // ≈10px/s
+    private static final long STEP_MIN_MS = 150L;
+    private static final long STEP_MAX_MS = 3000L;
     private static final long PAUSE_HEAD_MS = 700L;
     private static final long PAUSE_TAIL_MS = 900L;
 
@@ -33,12 +35,15 @@ public class MarqueeText extends AbstractWidget {
     private final String plain;
     /** 每个字符前需要插入的当前颜色码（随 §x 变化）。 */
     private final char[][] plainCodes;
+    /** 每个字符的像素宽。 */
+    private final int[] charW;
     private final int totalWidth;
     private final String headMsg;
 
     private boolean lastHovered = false;
     private int cursor = 0;          // 当前窗口起始字符下标
-    private long stateMs = 0L;       // 当前状态已持续时长
+    private long stateMs = 0L;       // 当前状态已持续时长（真实时钟累计）
+    private long lastTickMs = 0L;    // 上次渲染时刻（真实时钟）
     private int phase = 0;           // 0=头停 1=推进 2=尾停
     private String currentMsg = null;
 
@@ -67,7 +72,16 @@ public class MarqueeText extends AbstractWidget {
         }
         this.plain = sb.toString();
         this.plainCodes = codeList.toArray(new char[0][]);
-        this.totalWidth = font.width(plain);
+        int n = plain.length();
+        int[] widths = new int[n];
+        int tw = 0;
+        for (int i = 0; i < n; i++) {
+            int w = font.width(String.valueOf(plain.charAt(i)));
+            widths[i] = Math.max(1, w);
+            tw += w;
+        }
+        this.charW = widths;
+        this.totalWidth = tw;
         int headW = Math.max(8, width - 8);
         this.headMsg = plain.length() == 0 ? "" : sliceMsg(0, windowEnd(0, headW));
         target.setMessage(Component.literal(headMsg));
@@ -112,6 +126,7 @@ public class MarqueeText extends AbstractWidget {
             cursor = 0;
             phase = 0;
             stateMs = 0L;
+            lastTickMs = System.currentTimeMillis();
             String msg = sliceMsg(0, windowEnd(0, maxSliceW()));
             if (!msg.equals(currentMsg)) {
                 currentMsg = msg;
@@ -122,6 +137,7 @@ public class MarqueeText extends AbstractWidget {
             cursor = 0;
             phase = 0;
             stateMs = 0L;
+            lastTickMs = 0L;
             if (!headMsg.equals(currentMsg)) {
                 currentMsg = headMsg;
                 target.setMessage(Component.literal(headMsg));
@@ -131,7 +147,11 @@ public class MarqueeText extends AbstractWidget {
         if (!hovered || plain.length() == 0 || totalWidth <= maxSliceW()) {
             return; // 不超宽时静止（初始已是完整/开头文字）
         }
-        stateMs += 16L;
+        // 用真实时钟差累计（本方法一帧可能被调用多次，不能再按固定步长加）
+        long now = System.currentTimeMillis();
+        if (lastTickMs == 0L) lastTickMs = now;
+        stateMs += Math.min(250L, Math.max(0L, now - lastTickMs));
+        lastTickMs = now;
         switch (phase) {
             case 0 -> { // 头部停顿后开始推进
                 if (stateMs >= PAUSE_HEAD_MS) {
@@ -139,8 +159,8 @@ public class MarqueeText extends AbstractWidget {
                     stateMs = 0L;
                 }
             }
-            case 1 -> { // 每 STEP_MS 前进一个字符；剩余内容不足一窗时进入尾部停顿
-                if (stateMs >= STEP_MS) {
+            case 1 -> { // 按像素速度换算的每字符间隔推进；剩余不足一窗时进尾部停顿
+                if (stateMs >= stepIntervalMs(cursor)) {
                     stateMs = 0L;
                     int start = cursor;
                     int end = windowEnd(start, maxSliceW());
@@ -163,6 +183,13 @@ public class MarqueeText extends AbstractWidget {
                 }
             }
         }
+    }
+
+    /** 该字符在固定像素速度下应停留的毫秒数（字越宽走得越久 = 匀速）。 */
+    private long stepIntervalMs(int idx) {
+        if (idx < 0 || idx >= charW.length) return STEP_MIN_MS;
+        long ms = (long) (charW[idx] / PIXEL_SPEED_PX_PER_MS);
+        return Math.max(STEP_MIN_MS, Math.min(STEP_MAX_MS, ms));
     }
 
     private void setMsg(String msg) {
