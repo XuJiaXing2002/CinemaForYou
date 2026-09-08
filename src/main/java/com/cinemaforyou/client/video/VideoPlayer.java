@@ -577,6 +577,16 @@ public class VideoPlayer {
             // 网络读取超时（µs）：防止原生 read 无限阻塞（停止/重播时线程堆积）
             g.setOption("rw_timeout", "15000000");
         }
+        // 媒体流代理：TikTok/YouTube 等 CDN 域名与网页一样可能直连不通，
+        // 配置代理后拉流也走代理（本地服务器媒体 127.0.0.1 除外）
+        String proxy = UrlResolver.effectiveProxy();
+        if (proxy != null && url != null
+                && (url.startsWith("http://") || url.startsWith("https://"))
+                && !url.contains("127.0.0.1") && !url.contains("localhost")
+                && !url.contains("/cinema/")) {
+            g.setOption("http_proxy", proxy);
+            LOGGER.info("[CinemaForYou] 媒体流走代理: {}", trimForLog(url));
+        }
         return g;
     }
 

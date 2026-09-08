@@ -248,8 +248,8 @@ public final class UrlResolver {
         return out;
     }
 
-    /** 配置的网络代理参数（未配置返回空列表）。 */
-    private static java.util.List<String> proxyArgs() {
+    /** 归一化后的有效代理地址（未配置/无法识别返回 null）。媒体拉流共用。 */
+    public static String effectiveProxy() {
         try {
             if (com.cinemaforyou.CinemaForYouClient.clientConfig != null) {
                 String p = com.cinemaforyou.CinemaForYouClient.clientConfig.ytDlpProxy;
@@ -267,13 +267,19 @@ public final class UrlResolver {
                     if (v.startsWith("http://") || v.startsWith("https://")
                             || v.startsWith("socks5://") || v.startsWith("socks4://")
                             || v.startsWith("socks://")) {
-                        return java.util.List.of("--proxy", v);
+                        return v;
                     }
                     LOGGER.warn("[CinemaForYou] 代理地址格式无法识别，已忽略: {}", v);
                 }
             }
         } catch (Exception ignored) {}
-        return java.util.List.of();
+        return null;
+    }
+
+    /** 配置的网络代理参数（未配置返回空列表）。 */
+    private static java.util.List<String> proxyArgs() {
+        String v = effectiveProxy();
+        return v == null ? java.util.List.of() : java.util.List.of("--proxy", v);
     }
 
     /** 判断输入是否像本地文件路径（Windows 盘符、UNC、或实际存在的相对路径）。 */
@@ -636,6 +642,12 @@ public final class UrlResolver {
             if (lowerUrl.contains("bilibili.com") || lowerUrl.contains("b23.tv")) {
                 cmd.add("--add-headers");
                 cmd.add("Referer: https://www.bilibili.com/");
+            }
+            // YouTube 反爬：用 android/web 播放器客户端（纯 web 客户端容易被判机器人，
+            // 导致 "Sign in to confirm you're not a bot" / Requested format is not available）
+            if (lowerUrl.contains("youtube.com") || lowerUrl.contains("youtu.be")) {
+                cmd.add("--extractor-args");
+                cmd.add("youtube:player_client=android,web");
             }
             if (lowerUrl.contains("youtube.com") || lowerUrl.contains("youtu.be")) {
                 cmd.add("--extractor-args");
