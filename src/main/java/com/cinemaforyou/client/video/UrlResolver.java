@@ -175,6 +175,10 @@ public final class UrlResolver {
             cmd.add("--no-warnings");
             cmd.add("--no-playlist");
             cmd.add("--force-ipv4");
+            // Windows 管道下 yt-dlp 默认按 ANSI 代码页输出（中文标题会变 GBK 字节），
+            // 强制 UTF-8 输出；解码层另有 GBK 回退兜底
+            cmd.add("--encoding");
+            cmd.add("utf-8");
             cmd.add("--user-agent");
             cmd.add("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                     + "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
@@ -209,15 +213,7 @@ public final class UrlResolver {
                 LOGGER.debug("[CinemaForYou] 标题抓取超时，已终止: {}", trimForLog(url));
                 return null;
             }
-            StringBuilder out = new StringBuilder();
-            try (BufferedReader r = new BufferedReader(
-                    new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = r.readLine()) != null) {
-                    if (out.length() > 0) out.append(' ');
-                    out.append(line.trim());
-                }
-            }
+            byte[] outBytes = p.getInputStream().readAllBytes();
             StringBuilder errBuf = new StringBuilder();
             try (BufferedReader r = new BufferedReader(
                     new InputStreamReader(p.getErrorStream(), StandardCharsets.UTF_8))) {
@@ -228,17 +224,41 @@ public final class UrlResolver {
                 }
             }
             int exit = p.exitValue();
-            if (exit != 0 || out.length() == 0) {
+            if (exit != 0 || outBytes.length == 0) {
                 LOGGER.debug("[CinemaForYou] 标题抓取失败 url={} exit={} err={}",
                         trimForLog(url), exit, trimForLog(errBuf.toString()));
                 return null;
             }
-            String title = out.toString().trim().replace("\u00a7", "").replace('§', ' ');
+            // Windows 管道下 yt-dlp 可能仍按 GBK/ANSI 输出：先严格按 UTF-8 解，
+            // 失败（含大量替换符）则回退 GBK 再解，保证中文标题不乱码
+            String title = decodeTitleBytes(outBytes);
+            title = title.trim().replace("\u00a7", "").replace('§', ' ');
             if (title.length() > 120) title = title.substring(0, 120);
             return title.isEmpty() ? null : title;
         } catch (Exception e) {
             LOGGER.debug("[CinemaForYou] 标题抓取异常 url={}: {}", trimForLog(url), e.toString());
             return null;
+        }
+    }
+
+    /** 标题字节解码：UTF-8 严格解码，失败回退 GBK；空格折叠为单空格。 */
+    private static String decodeTitleBytes(byte[] raw) {
+        try {
+            java.nio.charset.CharsetDecoder dec = StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT);
+            String s = dec.decode(java.nio.ByteBuffer.wrap(raw)).toString();
+            return s.contains("\uFFFD") ? gbkDecode(raw) : s;
+        } catch (java.nio.charset.CharacterCodingException e) {
+            return gbkDecode(raw);
+        }
+    }
+
+    private static String gbkDecode(byte[] raw) {
+        try {
+            return new String(raw, java.nio.charset.Charset.forName("GBK"));
+        } catch (Exception e) {
+            return new String(raw, StandardCharsets.UTF_8);
         }
     }
 
