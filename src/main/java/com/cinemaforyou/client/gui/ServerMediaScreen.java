@@ -98,15 +98,16 @@ public class ServerMediaScreen extends Screen {
             int y = 36;
             for (int i = start; i < end; i++) {
                 String name = files.get(i);
-                String shortName = UiText.fit(name, 190);
                 String url = MediaLibraryClient.sourceFor(name);
-                addRenderableWidget(Button.builder(
-                        Component.literal("§a▶ " + shortName),
+                addRenderableWidget(Button.builder(Component.literal(""),
                         btn -> {
                             ScreenSoundSettingsScreen.playOn(screenId, url);
                             onClose();
                         }
                 ).bounds(left, y, 196, 20).build());
+                // 文件名超宽时横向滚动显示全部，不省略
+                addRenderableWidget(new MarqueeText(left, y, 196, 20,
+                        "§a▶ " + name, 0xFFFFFFFF));
                 addRenderableWidget(Button.builder(Component.literal("＋队列"),
                         btn -> {
                             com.cinemaforyou.CinemaForYouClient.clientConfig.addToQueue(

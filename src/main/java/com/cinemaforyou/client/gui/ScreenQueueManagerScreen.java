@@ -75,11 +75,12 @@ public class ScreenQueueManagerScreen extends Screen {
             for (int i = start; i < end; i++) {
                 String url = queue.get(i);
                 VideoTitleResolver.request(url);
-                String name = truncate(ClientConfig.displayNameFor(url), 26);
-                Button nameBtn = Button.builder(
-                        Component.literal((i + 1) + ". " + name), btn -> {}
-                ).bounds(left, y, w - 3 * 30 - 6, 20).build();
-                addRenderableWidget(nameBtn);
+                int nameW = w - 3 * 30 - 6;
+                String fullName = (i + 1) + ". " + ClientConfig.displayNameFor(url);
+                // 序号+名称（含标题/备注）：超宽时横向滚动显示全部，不省略
+                addRenderableWidget(Button.builder(Component.literal(""), btn -> {})
+                        .bounds(left, y, nameW, 20).build());
+                addRenderableWidget(new MarqueeText(left, y, nameW, 20, fullName, 0xFFFFFFFF));
 
                 int bx = left + (w - 3 * 30 - 6) + 2;
                 int fi = i;
