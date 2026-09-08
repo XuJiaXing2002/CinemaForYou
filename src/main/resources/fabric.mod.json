@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "id": "cinemaforyou",
+  "version": "${version}",
+  "name": "CinemaForYou",
+  "description": "Minecraft 26.2 世界内观影大屏模组（作者 NewBeeClass）：在游戏世界里创建真实可多人同步观看的视频大屏幕，放电影、追番、看演唱会都行。· 内容来源：本地视频文件、YouTube / B 站等视频网站链接（经 yt-dlp 解析）、服务器媒体库；· 屏幕自由调整：任意方块尺寸，可弯成曲面弧幕、倾斜旋转（±180° 翻转与镜像）、亮度 / 音量 / 分辨率 / 大小均可调；· 沉浸声音：世界内 3D 定位音频，播放距离与衰减可调，可做隔音；· 播放功能齐全：播放列表、播放历史、循环与自动连播、播放队列，多块屏幕可跨屏同步联动；· 兼容 BSL 等主流光影（Iris）。",
+  "authors": [
+    "NewBeeClass"
+  ],
+  "contact": {
+    "homepage": "https://github.com/XuJiaXing2002/CinemaForYou",
+    "sources": "https://github.com/XuJiaXing2002/CinemaForYou",
+    "issues": "https://github.com/XuJiaXing2002/CinemaForYou/issues"
+  },
+  "license": "LGPL-3.0-only",
+  "icon": "assets/cinemaforyou/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "com.cinemaforyou.CinemaForYou"
+    ],
+    "client": [
+      "com.cinemaforyou.CinemaForYouClient"
+    ]
+  },
+  "mixins": [
+    "cinemaforyou.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.19.3",
+    "minecraft": "~26.2",
+    "java": ">=25",
+    "fabric-api": "*"
+  },
+  "suggests": {
+    "modmenu": "*"
+  }
+}
