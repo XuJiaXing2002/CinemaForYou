@@ -1,4 +1,4 @@
-# CinemaForYou — Minecraft 世界内观影大屏
+# CinemaForYou — Minecraft 世界内观影大屏(爱发电&Modrinth也同步发布此模组)
 
 > Minecraft 26.2（Fabric）· 版本 1.0.3+26.2 · 作者 NewBeeClass · LGPL-3.0
 
