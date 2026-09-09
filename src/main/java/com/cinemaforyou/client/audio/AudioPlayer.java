@@ -379,9 +379,9 @@ public class AudioPlayer {
             int sampleRate = grabber.getSampleRate() > 0 ? grabber.getSampleRate() : 48000;
             AudioFormat format = new AudioFormat(sampleRate, 16, 2, true, false);
             line = AudioSystem.getSourceDataLine(format);
-            // 声卡缓冲约 500ms：吸收解码/网络抖动，位置计算会扣掉滞留缓冲，
-            // 因此不会引入额外延迟误差
-            int outputBufferSize = Math.max(16384, sampleRate * format.getFrameSize() / 2);
+            // 声卡缓冲约 2 秒：网络抖动（HLS 分片慢/重试）由缓冲吸收，画面不会一卡一卡；
+            // 位置计算会扣掉滞留缓冲，不引入额外延迟误差。代价是开播约多等 2 秒
+            int outputBufferSize = Math.max(16384, sampleRate * format.getFrameSize() * 2);
             line.open(format, outputBufferSize);
             this.sampleRate = sampleRate;
             bytesPerMs = Math.max(1, sampleRate * format.getFrameSize() / 1000);
