@@ -322,6 +322,16 @@ public class ClientScreenManager {
                         }
                         return;
                     }
+                    // 解码线程意外退出（无错误、未播完）：自动重建恢复，
+                    // 避免画面/声音静默卡死只能手动停止重播
+                    if (!existing.isDecoderAlive() && existing.getDurationMs() != 0L
+                            && !existing.hasEnded()) {
+                        LOGGER.warn("屏幕 {} 解码线程已退出，自动重建播放器恢复", id);
+                        existing.release();
+                        players.remove(id);
+                        ensurePlayer(id, st.sourceUrl, expectedPos);
+                        return;
+                    }
                     // 同 URL 已在播放：检测位置漂移
                     long localPos = existing.getPositionMs();
                     long drift = Math.abs(localPos - expectedPos);

@@ -175,6 +175,12 @@ public class VideoPlayer {
         return translucentContent;
     }
 
+    /** 解码线程是否存活（意外退出时由上层重建播放器）。 */
+    public boolean isDecoderAlive() {
+        Thread t = decodeThread;
+        return t != null && t.isAlive();
+    }
+
     public void updateScreen(CinemaScreen newScreen) {
         this.screen = newScreen;
         if (audioPlayer != null) {
@@ -412,8 +418,40 @@ public class VideoPlayer {
                         Thread.sleep(30);
                         continue;
                     }
-                    // 确认是真正的视频流结束
+                    // 区分"真结束"与"网络停顿"：接近片尾（时长已知且位置到尾部）
+                    // 才算 EOF；离片尾还远却连续空帧 = 网络/解码停顿，
+                    // 不能结束播放（否则慢网下看久一点就会被误判结束、必须重播）。
                     consecutiveNulls = 0;
+                    boolean nearEnd = durationMs > 0
+                            && masterPosMs >= durationMs - 1500L;
+                    // 无时长元数据的流（部分直播流）：音频已播完 + 连续空帧 = 真结束
+                    if (!nearEnd && durationMs <= 0) {
+                        AudioPlayer apEnd = audioPlayer;
+                        if (apEnd != null && apEnd.isFinished()) {
+                            nearEnd = true;
+                        }
+                    }
+                    long stalledWall = nowNull - lastFrameAtMs;
+                    if (!nearEnd) {
+                        if (stalledWall < 30_000) {
+                            LOGGER.warn("[CinemaForYou] 画面停顿 {}ms（位置 {}ms/时长 {}ms），"
+                                    + "等待网络/解码恢复，不结束播放",
+                                    stalledWall, masterPosMs, durationMs);
+                            updateMasterClock(false);
+                            Thread.sleep(400);
+                            continue;
+                        }
+                        // 停顿超过 30s：整体重开解码流尝试恢复（有 3s 冷却防风暴）
+                        if (nowNull - lastForcedActionAtMs > 3000L) {
+                            lastForcedActionAtMs = nowNull;
+                            reopenRequested = true;
+                            LOGGER.warn("[CinemaForYou] 画面停顿 {}ms，重开解码流尝试恢复",
+                                    stalledWall);
+                        }
+                        updateMasterClock(false);
+                        Thread.sleep(400);
+                        continue;
+                    }
                     LOGGER.info("[CinemaForYou] 视频流播放到结尾: pos={}ms", masterPosMs);
                     // #region debug-point D:video-null-frame
                     debugPoint("D", "VideoPlayer.decodeLoop:eof",
@@ -619,9 +657,10 @@ public class VideoPlayer {
             // 文件探测/跳读会产生大量小请求，经远程隧道时每次建连都很慢
             g.setOption("http_persistent", "1");
             // TCP 建连超时（µs）：服务器不可达/被防火墙丢弃时快速失败而非无限挂起
-            g.setOption("timeout", "8000000");
-            // 网络读取超时（µs）：防止原生 read 无限阻塞（停止/重播时线程堆积）
-            g.setOption("rw_timeout", "15000000");
+            g.setOption("timeout", "15000000");
+            // 网络读取超时（µs）：45s 内短暂的网络停顿不中断播放，
+            // 过长才让读失败（由解码循环做"停顿等待/重开"，避免误判结束）
+            g.setOption("rw_timeout", "45000000");
         }
         // 媒体流代理：TikTok/YouTube 等 CDN 域名与网页一样可能直连不通，
         // 配置代理后拉流也走代理（本地服务器媒体与 B站/抖音等直连友好站自动排除）

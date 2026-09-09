@@ -329,10 +329,9 @@ public class AudioPlayer {
             // 复用同一 TCP 连接发后续 Range 请求（远程隧道下每次建连都很慢）
             g.setOption("http_persistent", "1");
             // TCP 建连超时（µs）：服务器不可达/被防火墙丢弃时快速失败而非无限挂起
-            g.setOption("timeout", "8000000");
-            // 网络读取超时（µs）：防止解码线程无限阻塞在原生 read 上导致
-            // 停止/重播时线程堆积乃至卡死
-            g.setOption("rw_timeout", "15000000");
+            g.setOption("timeout", "15000000");
+            // 网络读取超时（µs）：45s 内网络停顿由缓冲吸收，不中断音频
+            g.setOption("rw_timeout", "45000000");
             // 媒体流代理：与视频侧一致（本地服务器媒体与 B站/抖音等直连友好站自动排除）
             if (com.cinemaforyou.client.video.UrlResolver.proxyEnabledFor(resolvedUrl)) {
                 g.setOption("http_proxy",
