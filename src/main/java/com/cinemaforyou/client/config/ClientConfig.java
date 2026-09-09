@@ -115,6 +115,13 @@ public class ClientConfig {
     /** 声音距离衰减指数：1.0 = 线性；越大衰减越快，越小衰减越慢。 */
     public double audioFalloffExponent = 1.0;
 
+    /**
+     * 音频设备输出延迟补偿（毫秒）：声卡帧位置是"已交给混音器"的时间，
+     * 实际出声还隔着系统混音/设备延迟（Windows 常见 100~300ms）。
+     * 不补偿会导致听感"声音比画面慢"。若补偿后变成画面比声音慢，调小此值。
+     */
+    public double audioDeviceLatencyMs = 120.0;
+
     // ───────────── 播放列表 / 历史（客户端本机） ─────────────
 
     /** 每屏"播完行为"：0=跟随全局默认 1=循环本片 2=自动播放下一个 3=播完暂停（键为屏幕 UUID）。 */
@@ -335,6 +342,8 @@ public class ClientConfig {
             if (instance.audioMaxDistance > 512) instance.audioMaxDistance = 512;
             if (instance.audioFalloffExponent < 0.1) instance.audioFalloffExponent = 0.1;
             if (instance.audioFalloffExponent > 5.0) instance.audioFalloffExponent = 5.0;
+            if (instance.audioDeviceLatencyMs < 0) instance.audioDeviceLatencyMs = 0;
+            if (instance.audioDeviceLatencyMs > 500) instance.audioDeviceLatencyMs = 500;
             if (instance.screenPlayMode == null) instance.screenPlayMode = new java.util.HashMap<>();
             if (instance.defaultPlayMode < 0 || instance.defaultPlayMode > 3) instance.defaultPlayMode = 0;
             if (instance.screenPlaylist == null) instance.screenPlaylist = new java.util.HashMap<>();

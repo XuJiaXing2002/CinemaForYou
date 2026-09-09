@@ -536,11 +536,20 @@ public class AudioPlayer {
         if (l == null || !started) return;
         long pos;
         long playedFrames = l.getLongFramePosition();
+        // 帧位置是"交给混音器"的时间，实际出声还隔着系统/设备延迟；
+        // 减去补偿后主时钟才接近"耳朵听到的进度"（避免声音总比画面慢）
+        long latency = 0L;
+        try {
+            if (com.cinemaforyou.CinemaForYouClient.clientConfig != null) {
+                latency = Math.max(0L, (long) com.cinemaforyou.CinemaForYouClient.clientConfig.audioDeviceLatencyMs);
+            }
+        } catch (Exception ignored) {}
         if (playedFrames >= 0) {
             pos = segmentStartMs
-                    + (playedFrames - framesAtSegStart) * 1000L / Math.max(1, sampleRate);
+                    + (playedFrames - framesAtSegStart) * 1000L / Math.max(1, sampleRate)
+                    - latency;
         } else {
-            pos = segmentStartMs + writtenMsInSegment - bufferedMs();
+            pos = segmentStartMs + writtenMsInSegment - bufferedMs() - latency;
         }
         positionMs = Math.max(0L, Math.max(segmentStartMs, pos));
     }
