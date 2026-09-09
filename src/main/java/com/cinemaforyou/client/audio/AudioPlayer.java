@@ -314,6 +314,36 @@ public class AudioPlayer {
         return false;
     }
 
+    /**
+     * 打开并 start 音频抓帧器（带头部可选）。网络类超时/代理始终生效。
+     */
+    private FFmpegFrameGrabber openStartedAudioGrabber(boolean withHeaders) throws Exception {
+        FFmpegFrameGrabber g = new FFmpegFrameGrabber(resolvedUrl);
+        String headers = withHeaders ? com.cinemaforyou.client.video.UrlResolver.ffmpegHttpHeaders(
+                sourceUrl, resolvedUrl) : null;
+        if (headers != null) {
+            g.setOption("headers", headers);
+        }
+        if (resolvedUrl != null
+                && (resolvedUrl.startsWith("http://") || resolvedUrl.startsWith("https://"))) {
+            // 复用同一 TCP 连接发后续 Range 请求（远程隧道下每次建连都很慢）
+            g.setOption("http_persistent", "1");
+            // TCP 建连超时（µs）：服务器不可达/被防火墙丢弃时快速失败而非无限挂起
+            g.setOption("timeout", "8000000");
+            // 网络读取超时（µs）：防止解码线程无限阻塞在原生 read 上导致
+            // 停止/重播时线程堆积乃至卡死
+            g.setOption("rw_timeout", "15000000");
+            // 媒体流代理：与视频侧一致（本地服务器媒体与 B站/抖音等直连友好站自动排除）
+            if (com.cinemaforyou.client.video.UrlResolver.proxyEnabledFor(resolvedUrl)) {
+                g.setOption("http_proxy",
+                        com.cinemaforyou.client.video.UrlResolver.effectiveProxy());
+            }
+        }
+        g.setSampleFormat(avutil.AV_SAMPLE_FMT_S16);
+        g.start();
+        return g;
+    }
+
     private void decodeLoop(long startPosMs) {
         try {
             // 瘦身版：natives 由 NativeRuntime 按需下载并注册，这里等它就绪
@@ -321,26 +351,21 @@ public class AudioPlayer {
                 throw new RuntimeException("ffmpeg natives unavailable: "
                         + com.cinemaforyou.client.video.NativeRuntime.failureReason());
             }
-            grabber = new FFmpegFrameGrabber(resolvedUrl);
-            String headers = com.cinemaforyou.client.video.UrlResolver.ffmpegHttpHeaders(
-                    sourceUrl, resolvedUrl);
-            if (headers != null) {
-                grabber.setOption("headers", headers);
-                // 复用同一 TCP 连接发后续 Range 请求（远程隧道下每次建连都很慢）
-                grabber.setOption("http_persistent", "1");
-                // TCP 建连超时（µs）：服务器不可达/被防火墙丢弃时快速失败而非无限挂起
-                grabber.setOption("timeout", "8000000");
-                // 网络读取超时（µs）：防止解码线程无限阻塞在原生 read 上导致
-                // 停止/重播时线程堆积乃至卡死
-                grabber.setOption("rw_timeout", "15000000");
+            boolean httpDirect = resolvedUrl != null
+                    && (resolvedUrl.startsWith("http://") || resolvedUrl.startsWith("https://"));
+            // 与视频侧一致：带头部打不开（防盗链 CDN 拒绝来源头）时自动无头重试
+            try {
+                grabber = openStartedAudioGrabber(true);
+            } catch (Exception first) {
+                if (httpDirect && com.cinemaforyou.client.video.UrlResolver.ffmpegHttpHeaders(
+                        sourceUrl, resolvedUrl) != null) {
+                    LOGGER.warn("[CinemaForYou] 音频带头部打开失败({})，尝试无自定义请求头重试",
+                            String.valueOf(first.getMessage()));
+                    grabber = openStartedAudioGrabber(false);
+                } else {
+                    throw first;
+                }
             }
-            // 媒体流代理：与视频侧一致（本地服务器媒体与 B站/抖音等直连友好站自动排除）
-            if (com.cinemaforyou.client.video.UrlResolver.proxyEnabledFor(resolvedUrl)) {
-                grabber.setOption("http_proxy",
-                        com.cinemaforyou.client.video.UrlResolver.effectiveProxy());
-            }
-            grabber.setSampleFormat(avutil.AV_SAMPLE_FMT_S16);
-            grabber.start();
             started = true;
 
             if (!grabber.hasAudio()) {
