@@ -64,11 +64,11 @@ public class VideoPlayer {
 
     /**
      * 帧槽上限/内存预算：解码可领先帧数按"分辨率+内存预算"自适应
-     * （1080p 帧约 12MB，预算 240MB ≈ 0.7s@24fps；480p ≈ 3s）。
+     * （1080p 帧约 12MB，预算 400MB ≈ 1.2s@24fps；480p ≈ 5s）。
      * 槽越多抗网络抖动越强；解码帧缓冲受内存限制（浏览器缓存的是压缩数据）。
      */
     private static final int MAX_SLOTS = 72;
-    private static final int SLOT_MEMORY_MB = 240;
+    private static final int SLOT_MEMORY_MB = 400;
     /** 目标领先时长（秒）与自适应下限。 */
     private static final double BUFFER_TARGET_SECONDS = 3.0;
     private int slotCount = 10; // 首帧后按实际分辨率/帧率重算
