@@ -103,6 +103,7 @@ public class ScreenRenderer {
 
             VideoPlayer vp = mgr.getPlayer(id);
             Identifier textureId = (vp != null) ? vp.getTextureId() : null;
+            boolean alphaContent = vp != null && vp.isTranslucentContent();
 
             // 渲染：黑底 + 视频纹理（相机坐标用于视频外扩防 Z-fighting）
             var camPos = context.levelState().cameraRenderState.pos;
@@ -111,7 +112,8 @@ public class ScreenRenderer {
                     context.poseStack(),
                     screen,
                     textureId,
-                    new double[]{camPos.x, camPos.y, camPos.z});
+                    new double[]{camPos.x, camPos.y, camPos.z},
+                    alphaContent);
             if (textureId == null) {
                 long nowLog = System.currentTimeMillis();
                 if (lastRenderLogMs == 0L || nowLog - lastRenderLogMs >= 2000L) {

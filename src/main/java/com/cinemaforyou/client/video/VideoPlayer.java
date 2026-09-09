@@ -129,6 +129,9 @@ public class VideoPlayer {
     private volatile boolean reopenRequested = false;
     /** 最近一次成功出新帧的时刻（解码线程写、渲染线程读，毫秒）。 */
     private volatile long lastFrameAtMs = 0L;
+    /** 已检测为透明视频（含 alpha<250 像素），渲染用混合管线。 */
+    private volatile boolean translucentContent = false;
+    private int alphaCheckFrames = 0;
     /** 渲染线程看门狗：已触发过补 seek（未恢复则升级为重开）。 */
     private volatile boolean resyncArmed = false;
     private volatile long resyncArmedAtMs = 0L;
@@ -165,6 +168,11 @@ public class VideoPlayer {
 
     public String getSourceUrl() {
         return sourceUrl;
+    }
+
+    /** 该视频是否检测到透明内容（渲染用混合管线，避免黑底）。 */
+    public boolean isTranslucentContent() {
+        return translucentContent;
     }
 
     public void updateScreen(CinemaScreen newScreen) {
@@ -596,8 +604,9 @@ public class VideoPlayer {
         }
         FFmpegFrameGrabber g = new FFmpegFrameGrabber(url);
         g.setOption("rtsp_transport", "tcp");
-        // 强制 BGR24，解码线程直接按 B/G/R 字节序手工转 ABGR
-        g.setPixelFormat(avutil.AV_PIX_FMT_BGR24);
+        // 强制 BGRA：保留 alpha 通道（透明视频素材用；普通视频 alpha 恒 255，
+        // 与旧 BGR24 行为一致，仅多一个字节的搬运）
+        g.setPixelFormat(avutil.AV_PIX_FMT_BGRA);
         int decodeHeight = effectiveDecodeHeight(screen);
         if (decodeHeight > 0) {
             // 只缩小不放大：高度取 min(decodeHeight, ih)，宽度 -2 自动取偶数
@@ -829,6 +838,21 @@ public class VideoPlayer {
 
         boolean ok = convertFrameToAbgr(frame, dest, w, h);
         if (ok) {
+            // 透明内容检测：前若干帧抽样扫描 alpha（BGRA 解码后有效）。
+            // 一旦发现 <250 的像素即标记该源为透明视频（渲染切混合管线）
+            if (!translucentContent && alphaCheckFrames < 12) {
+                alphaCheckFrames++;
+                int len = w * h;
+                int step = len > 600000 ? 3 : 1;
+                int[] px = dest;
+                for (int i = 0; i < len; i += step) {
+                    if (((px[i] >>> 24) & 0xFF) < 250) {
+                        translucentContent = true;
+                        LOGGER.info("[CinemaForYou] 检测到透明视频内容（启用混合渲染）: {}x{}", w, h);
+                        break;
+                    }
+                }
+            }
             // 解码线程生成 mip 层：每层 = 上一层 2×2 均值（奇数边钳制最后一行/列）
             int[][] chain = null;
             synchronized (frameLock) {
@@ -906,7 +930,7 @@ public class VideoPlayer {
     }
 
     /**
-     * BGR24（或 BGRA）ByteBuffer 手工转 ABGR int 数组。
+     * BGR24/BGRA ByteBuffer 手工转 ABGR int 数组（BGRA 时保留 alpha 通道）。
      * 像素行间可能有对齐填充，必须按 {@link Frame#imageStride} 逐行拷贝。
      */
     private boolean convertFrameToAbgr(Frame frame, int[] dest, int w, int h) {
@@ -937,8 +961,9 @@ public class VideoPlayer {
                 int bl = src.get() & 0xFF;
                 int g = src.get() & 0xFF;
                 int r = src.get() & 0xFF;
-                if (bpp == 4) src.get(); // 跳过 alpha
-                dest[idx + x] = 0xFF000000 | r | (g << 8) | (bl << 16);
+                int a = 255;
+                if (bpp == 4) a = src.get() & 0xFF; // BGRA 的第 4 字节
+                dest[idx + x] = (a << 24) | r | (g << 8) | (bl << 16);
                 x++;
             }
             for (; x < w; x++) dest[idx + x] = 0xFF000000;

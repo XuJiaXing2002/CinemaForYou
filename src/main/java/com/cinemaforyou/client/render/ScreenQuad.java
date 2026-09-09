@@ -176,7 +176,8 @@ public final class ScreenQuad {
             PoseStack poseStack,
             CinemaScreen screen,
             Identifier textureId,
-            double[] cameraPos) {
+            double[] cameraPos,
+            boolean alphaContent) {
         float[] verts = computeVerts(screen);
         if (verts == null) return;
         float scale = Math.max(0.25f, screen.displayScalePercent() / 100.0f);
@@ -267,12 +268,13 @@ public final class ScreenQuad {
         // entityTranslucent 的半透明混合会让每像素有效透明度 < 1，视频面片会
         // 漏出背后世界——表现为白屏上"不规律网格+细线"噪点（随视角变化）。
         // 不透明管线经实测无噪点且亮度正常（debugRenderMode=3 验证）。
-        boolean opaque = mode != 4; // mode 4 保留半透明单面供对比调试
+        // 例外：检测到透明视频内容（真 alpha 素材）时切回混合管线以保留透明。
+        boolean opaque = (mode != 4) && !alphaContent;
         RenderType renderType = opaque ? videoOpaqueRenderType(textureId) : videoRenderType(textureId);
-        boolean singleFace = mode == 4;
+        boolean singleFace = mode == 4 && !alphaContent;
 
         // 曲面屏：网格化弧面提交（mode 4 调试单面仍走平面路径）
-        if (curved && opaque && !singleFace) {
+        if (curved && !singleFace) {
             submitGridTextured(submitCollector, poseStack, renderType,
                     new GridData(displayVerts, curvedGrid.cols, curvedGrid.rows,
                             curvedGrid.uEdge, curvedGrid.vEdge), brightness, uv2x, uv2y,
