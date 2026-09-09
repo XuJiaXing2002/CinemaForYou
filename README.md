@@ -1,6 +1,6 @@
 # CinemaForYou — Minecraft 世界内观影大屏(爱发电&Modrinth也同步发布此模组)
 
-> Minecraft 26.2（Fabric）· 版本 1.0.5+26.2 · 作者 NewBeeClass · LGPL-3.0
+> Minecraft 26.2（Fabric）· 版本 1.0.6+26.2 · 作者 NewBeeClass · LGPL-3.0
 
 在 Minecraft 世界里创建**真实可多人同步观看**的视频大屏幕：放电影、追番、看演唱会，
 屏幕可任意调节大小和曲率，带世界内 3D 定位声音。
@@ -18,7 +18,7 @@ Minecraft 26.2 世界内观影大屏模组：在Minecraft里创建真实可多�
 ## 快速上手
 
 1. 安装 [Fabric Loader 0.19.3+](https://fabricmc.net/) 与 [Fabric API](https://modrinth.com/mod/fabric-api)（Minecraft 26.2、Java 25+）；
-2. 把 `cinemaforyou-fabric-1.0.5+26.2.jar` 放入 `mods` 文件夹；
+2. 把 `cinemaforyou-fabric-1.0.6+26.2.jar` 放入 `mods` 文件夹；
 3. 手持模组物品框选两角创建屏幕，看着屏幕按 **V** 打开该屏幕控制；
 4. 按 **Shift+V** 可选择任意一个屏幕的控制，对着非屏幕位置按V打开"全局设置"可调整全局默认值，可在游戏选项的按键绑定里修改V键为其他键，绑定项在按键绑定菜单里的"杂项"下。
 5.在线视频播放首次使用时自动下载 yt-dlp，如若下载失败，可手动下载yt-dlp并放到自己玩的游戏版本目录下的cinema文件夹下(正常情况下此文件夹里还有一个videos文件夹)。
