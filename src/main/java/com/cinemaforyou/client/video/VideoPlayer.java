@@ -277,9 +277,32 @@ public class VideoPlayer {
             }
 
             videoResolvedUrl = resolved.videoUrl();
-            grabber = openConfiguredGrabber(videoResolvedUrl);
+            // 直链防盗链：带 Referer/UA 打不开时（部分 CDN 反而拒绝带来源头），
+            // 自动去掉自定义请求头重试一次
+            boolean httpDirect = videoResolvedUrl != null
+                    && (videoResolvedUrl.startsWith("http://")
+                        || videoResolvedUrl.startsWith("https://"));
+            try {
+                grabber = openConfiguredGrabber(videoResolvedUrl);
+                grabber.start();
+            } catch (Exception firstOpen) {
+                if (httpDirect && UrlResolver.ffmpegHttpHeaders(sourceUrl, videoResolvedUrl) != null) {
+                    LOGGER.warn("[CinemaForYou] 带头部打开失败({})，尝试无自定义请求头重试: {}",
+                            String.valueOf(firstOpen.getMessage()), trimForLog(videoResolvedUrl));
+                    try {
+                        if (grabber != null) {
+                            try { grabber.release(); } catch (Exception ignored) {}
+                        }
+                        grabber = openConfiguredGrabber(videoResolvedUrl, false);
+                        grabber.start();
+                    } catch (Exception e2) {
+                        throw e2; // 二次也失败：抛原异常路径
+                    }
+                } else {
+                    throw firstOpen;
+                }
+            }
             long startMs = System.currentTimeMillis();
-            grabber.start();
             durationMs = Math.max(0L, grabber.getLengthInTime() / 1000L);
             LOGGER.info("[CinemaForYou] grabber 启动成功 {}x{} @ {}fps, 耗时 {}ms",
                     grabber.getImageWidth(), grabber.getImageHeight(),
@@ -552,6 +575,12 @@ public class VideoPlayer {
 
     /** 创建并配置好抓帧器（未 start）。同一配置在重开解码流时复用。 */
     private FFmpegFrameGrabber openConfiguredGrabber(String url) throws Exception {
+        return openConfiguredGrabber(url, true);
+    }
+
+    /** @param withSourceHeaders 是否附带按来源生成的 UA/Referer 请求头（防盗链站可能需要去掉）。 */
+    private FFmpegFrameGrabber openConfiguredGrabber(String url, boolean withSourceHeaders)
+            throws Exception {
         // 瘦身版：natives 由 NativeRuntime 按需下载并注册，这里等它就绪
         if (!NativeRuntime.ensureBlocking()) {
             throw new Exception("ffmpeg natives unavailable: "
@@ -566,7 +595,7 @@ public class VideoPlayer {
             // 只缩小不放大：高度取 min(decodeHeight, ih)，宽度 -2 自动取偶数
             g.setVideoOption("vf", "scale=-2:min(" + decodeHeight + ",ih)");
         }
-        String headers = UrlResolver.ffmpegHttpHeaders(sourceUrl, url);
+        String headers = withSourceHeaders ? UrlResolver.ffmpegHttpHeaders(sourceUrl, url) : null;
         if (headers != null) {
             g.setOption("headers", headers);
             // 复用同一 TCP 连接发后续 Range 请求：FFmpeg 默认每个请求新建连接，
