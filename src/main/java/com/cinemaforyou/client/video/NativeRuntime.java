@@ -21,7 +21,7 @@ import java.util.zip.ZipInputStream;
 /**
  * FFmpeg 解码原生库运行时保障（瘦身方案核心）。
  *
- * <p>自 1.0.4 起 jar 不再内置各平台 FFmpeg natives（原 121MB，现约 2MB）；
+ * <p>自 1.0.5 起 jar 不再内置各平台 FFmpeg natives（原 121MB，现约 2MB）；
  * 首次需要解码时，从 Maven 镜像（阿里云 → repo1 回退）下载并解压与
  * JavaCV 严格匹配的 natives（本机平台一份，约 30MB，只下一次），随后通过
  * JavaCPP 官方支持的系统属性（{@code org.bytedeco.javacpp.platform.linkpath /
@@ -205,7 +205,7 @@ public final class NativeRuntime {
         c.setConnectTimeout(10_000);
         c.setReadTimeout(90_000);
         c.setRequestProperty("User-Agent",
-                "Mozilla/5.0 CinemaForYou/1.0.4");
+                "Mozilla/5.0 CinemaForYou/1.0.5");
         int code = c.getResponseCode();
         if (code != 200) {
             c.disconnect();
@@ -223,7 +223,7 @@ public final class NativeRuntime {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setConnectTimeout(10_000);
         c.setReadTimeout(timeoutMs);
-        c.setRequestProperty("User-Agent", "Mozilla/5.0 CinemaForYou/1.0.4");
+        c.setRequestProperty("User-Agent", "Mozilla/5.0 CinemaForYou/1.0.5");
         int code = c.getResponseCode();
         if (code != 200) {
             c.disconnect();
