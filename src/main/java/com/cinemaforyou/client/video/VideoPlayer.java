@@ -62,8 +62,16 @@ public class VideoPlayer {
     private static final Path DEBUG_LOG =
             Path.of("d:/Minecraft_Project/CinemaForYou/.dbg/trae-debug-log-video-link-stutter.ndjson");
 
-    /** 帧槽数量（解码可领先的帧数；越小延迟越低，越大抗网络抖动越强）。 */
-    private static final int SLOT_COUNT = 3;
+    /**
+     * 帧槽上限/内存预算：解码可领先帧数按"分辨率+内存预算"自适应
+     * （1080p 帧约 12MB，预算 240MB ≈ 0.7s@24fps；480p ≈ 3s）。
+     * 槽越多抗网络抖动越强；解码帧缓冲受内存限制（浏览器缓存的是压缩数据）。
+     */
+    private static final int MAX_SLOTS = 72;
+    private static final int SLOT_MEMORY_MB = 240;
+    /** 目标领先时长（秒）与自适应下限。 */
+    private static final double BUFFER_TARGET_SECONDS = 3.0;
+    private int slotCount = 10; // 首帧后按实际分辨率/帧率重算
     /** 槽状态。 */
     private static final int SLOT_EMPTY = 0;
     private static final int SLOT_DECODING = 1;
@@ -93,8 +101,8 @@ public class VideoPlayer {
     private final Object frameLock = new Object();
     // 每个槽 = 一条 mip 链：slotPixels[槽][0] 为原始帧，[1..] 为逐级减半的 mip 层
     private int[][][] slotPixels = null;
-    private final long[] slotDueMs = new long[SLOT_COUNT];
-    private final int[] slotState = new int[SLOT_COUNT];
+    private final long[] slotDueMs = new long[MAX_SLOTS];
+    private final int[] slotState = new int[MAX_SLOTS];
     private volatile int frameWidth;
     private volatile int frameHeight;
 
@@ -715,7 +723,7 @@ public class VideoPlayer {
                 return; // 交回主循环处理重开/seek
             }
             synchronized (frameLock) {
-                for (int i = 0; i < SLOT_COUNT; i++) {
+                for (int i = 0; i < slotCount; i++) {
                     if (slotState[i] == SLOT_EMPTY) {
                         return;
                     }
@@ -730,7 +738,7 @@ public class VideoPlayer {
      *  上传中的槽不重置（渲染线程马上会把它置回空），避免覆盖正在读的数组。 */
     private void resetSlots() {
         synchronized (frameLock) {
-            for (int i = 0; i < SLOT_COUNT; i++) {
+            for (int i = 0; i < slotCount; i++) {
                 if (slotState[i] != SLOT_UPLOADING) {
                     slotState[i] = SLOT_EMPTY;
                     slotDueMs[i] = 0L;
@@ -756,7 +764,7 @@ public class VideoPlayer {
         for (int attempt = 0; attempt < 500 && dest == null; attempt++) {
             synchronized (frameLock) {
                 boolean uploading = false;
-                for (int i = 0; i < SLOT_COUNT; i++) {
+                for (int i = 0; i < slotCount; i++) {
                     if (slotState[i] == SLOT_UPLOADING) {
                         uploading = true;
                         break;
@@ -768,7 +776,7 @@ public class VideoPlayer {
                         || slotPixels[0].length != mipCount
                         || frameWidth != w || frameHeight != h;
                 if (!needResize) {
-                    for (int i = 0; i < SLOT_COUNT; i++) {
+                    for (int i = 0; i < slotCount; i++) {
                         if (slotState[i] == SLOT_EMPTY) {
                             slotState[i] = SLOT_DECODING;
                             dest = slotPixels[i][0];
@@ -777,8 +785,25 @@ public class VideoPlayer {
                     }
                 } else if (!uploading) {
                     // 此刻没有上传进行中，安全整体重分配（每槽一条 mip 链）
-                    int[][][] fresh = new int[SLOT_COUNT][mipCount][];
-                    for (int i = 0; i < SLOT_COUNT; i++) {
+                    // 槽深自适应：内存预算 ÷ 单帧字节（含 mip 约 ×1.4），
+                    // 再与"目标领先秒数 × 帧率"取小，保证不超内存又有足够抗抖动深度
+                    long perFrameBytes = (long) w * h * 4L * 14L / 10L;
+                    int byMem = (int) Math.max(6L,
+                            (SLOT_MEMORY_MB * 1048576L) / Math.max(1L, perFrameBytes));
+                    double fps = 30.0;
+                    try {
+                        double f = grabber != null ? grabber.getFrameRate() : 0.0;
+                        if (f > 1.0 && f < 240.0) fps = f;
+                    } catch (Exception ignored) {}
+                    int byTime = (int) Math.max(6L, Math.round(BUFFER_TARGET_SECONDS * fps));
+                    int newCount = Math.min(MAX_SLOTS, Math.min(byMem, byTime));
+                    if (newCount != slotCount) {
+                        LOGGER.info("[CinemaForYou] 帧槽深度自适应: {}（{}x{}，预算{}MB/目标{}s）",
+                                newCount, w, h, SLOT_MEMORY_MB, BUFFER_TARGET_SECONDS);
+                    }
+                    slotCount = newCount;
+                    int[][][] fresh = new int[slotCount][mipCount][];
+                    for (int i = 0; i < slotCount; i++) {
                         for (int k = 0; k < mipCount; k++) {
                             fresh[i][k] = new int[
                                     Math.max(1, w >> k) * Math.max(1, h >> k)];
@@ -787,7 +812,7 @@ public class VideoPlayer {
                     slotPixels = fresh;
                     frameWidth = w;
                     frameHeight = h;
-                    for (int i = 0; i < SLOT_COUNT; i++) {
+                    for (int i = 0; i < slotCount; i++) {
                         slotState[i] = SLOT_EMPTY;
                         slotDueMs[i] = 0L;
                     }
@@ -827,7 +852,7 @@ public class VideoPlayer {
     }
 
     private int idxOf(int[] pixels) {
-        for (int i = 0; i < SLOT_COUNT; i++) {
+        for (int i = 0; i < slotCount; i++) {
             if (slotPixels != null && slotPixels[i] != null
                     && slotPixels[i][0] == pixels) return i;
         }
@@ -1028,7 +1053,7 @@ public class VideoPlayer {
         synchronized (frameLock) {
             int pick = -1;
             long bestDue = Long.MIN_VALUE;
-            for (int i = 0; i < SLOT_COUNT; i++) {
+            for (int i = 0; i < slotCount; i++) {
                 if (slotState[i] == SLOT_FILLED) {
                     long due = slotDueMs[i];
                     if (due <= master + PRESENTATION_LEAD_MS && due > bestDue) {
@@ -1083,7 +1108,7 @@ public class VideoPlayer {
         } finally {
             synchronized (frameLock) {
                 // 上传完成：槽回到空闲，解码线程可继续
-                for (int i = 0; i < SLOT_COUNT; i++) {
+                for (int i = 0; i < slotCount; i++) {
                     if (slotPixels != null && slotPixels[i] != null
                             && slotPixels[i][0] == chain[0]) {
                         slotState[i] = SLOT_EMPTY;
@@ -1098,7 +1123,7 @@ public class VideoPlayer {
     private void releaseSlotByPixels(int[] pixels) {
         if (pixels == null) return;
         synchronized (frameLock) {
-            for (int i = 0; i < SLOT_COUNT; i++) {
+            for (int i = 0; i < slotCount; i++) {
                 if (slotPixels != null && slotPixels[i] != null
                         && slotPixels[i][0] == pixels) {
                     slotState[i] = SLOT_EMPTY;
