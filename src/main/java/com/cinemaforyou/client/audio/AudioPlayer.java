@@ -538,11 +538,13 @@ public class AudioPlayer {
         long pos;
         long playedFrames = l.getLongFramePosition();
         // 帧位置是"交给混音器"的时间，实际出声还隔着系统/设备延迟；
-        // 减去补偿后主时钟才接近"耳朵听到的进度"（避免声音总比画面慢）
+        // 减去补偿后主时钟才接近"耳朵听到的进度"（避免声音总比画面慢）。
+        // 补偿值 = 该屏覆盖（若与全局不同）否则全局
         long latency = 0L;
         try {
             if (com.cinemaforyou.CinemaForYouClient.clientConfig != null) {
-                latency = Math.max(0L, (long) com.cinemaforyou.CinemaForYouClient.clientConfig.audioDeviceLatencyMs);
+                latency = com.cinemaforyou.CinemaForYouClient.clientConfig
+                        .effectiveAudioLatencyMs(screenId.toString());
             }
         } catch (Exception ignored) {}
         if (playedFrames >= 0) {

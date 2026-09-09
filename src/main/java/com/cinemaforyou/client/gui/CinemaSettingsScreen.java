@@ -151,6 +151,14 @@ public class CinemaSettingsScreen extends ScrollableSettingsScreen {
         ).bounds(right, ry(y), ctrlW, 18).build());
         y += rowH;
 
+        // ── 默认音频延迟补偿 ──
+        addLabel("音频延迟(默认)", left, ry(y), labelW);
+        addRenderableWidget(Button.builder(
+                Component.literal(globalLatencyLabel() + "（点击修改）"),
+                btn -> openGlobalLatencyEditor()
+        ).bounds(right, ry(y), ctrlW, 18).build());
+        y += rowH;
+
         // ── yt-dlp 自动下载 ──
         addLabel("yt-dlp 自动下载", left, ry(y), labelW);
         addRenderableWidget(toggleButton(right, ry(y), ctrlW, autoDownloadYtDlp, v -> autoDownloadYtDlp = v));
@@ -487,6 +495,34 @@ public class CinemaSettingsScreen extends ScrollableSettingsScreen {
             case 30 -> "极快 3.0";
             default -> (x10 / 10.0) + "";
         };
+    }
+
+    /** 全局音频延迟按钮文案。 */
+    private String globalLatencyLabel() {
+        int ms = 0;
+        if (CinemaForYouClient.clientConfig != null) {
+            ms = (int) Math.max(0, Math.min(500, CinemaForYouClient.clientConfig.audioDeviceLatencyMs));
+        }
+        return ms == 0 ? "0ms（不补偿）" : ms + "ms";
+    }
+
+    /** 打开全局音频延迟输入框（0-500ms）。 */
+    private void openGlobalLatencyEditor() {
+        ClientConfig cfg = CinemaForYouClient.clientConfig;
+        if (cfg == null) return;
+        int cur = (int) Math.max(0, Math.min(500, cfg.audioDeviceLatencyMs));
+        openChild(new InputValueScreen(
+                "全局音频延迟补偿（0-500ms）\n声音比画面慢→调大；画面比声音慢→调小；0=不补偿",
+                String.valueOf(cur), 6,
+                v -> {
+                    try {
+                        int ms = Integer.parseInt(v.trim());
+                        cfg.audioDeviceLatencyMs = Math.max(0, Math.min(500, ms));
+                        cfg.save();
+                    } catch (Exception ignored) {
+                        // 输入非法：保持原值
+                    }
+                }));
     }
 
     private static String browserLabel(String b) {

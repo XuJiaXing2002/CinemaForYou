@@ -85,6 +85,17 @@ public class ScreenSoundSettingsScreen extends ScrollableSettingsScreen {
                 }));
         y += 22;
 
+        // ── 音频延迟补偿（本屏覆盖；与全局相同时跟随全局） ──
+        int effLat = cfg.effectiveAudioLatencyMs(screenId.toString());
+        String latLabel = effLat == 0
+                ? "音频延迟: §a0ms§7（默认不补偿，点击修改）"
+                : "音频延迟: §a" + effLat + "ms§7（点击修改）";
+        addRenderableWidget(Button.builder(
+                Component.literal(latLabel),
+                btn -> openLatencyEditor(screenId, cfg))
+                .bounds(cx - 120, ry(y), 240, 20).build());
+        y += 22;
+
         // ── 播完行为（0=跟随全局默认） ──
         Integer rawMode = cfg.rawPlayMode(screenId.toString());
         int base = rawMode == null ? 0 : rawMode;
@@ -125,8 +136,23 @@ public class ScreenSoundSettingsScreen extends ScrollableSettingsScreen {
         finishContent(y);
     }
 
-    private Button cycleButton(int cx, int y, int w, String label, Runnable onClick) {
-        return Button.builder(Component.literal(label),
+    /** 打开本屏音频延迟输入框（0-500ms；保存后返回本页自动刷新显示）。 */
+    private void openLatencyEditor(UUID id, ClientConfig cfg) {
+        String init = String.valueOf(cfg.effectiveAudioLatencyMs(id.toString()));
+        openChild(new InputValueScreen(
+                "音频延迟补偿（0-500ms）\n声音比画面慢→调大；画面比声音慢→调小；0=不补偿",
+                init, 6,
+                v -> {
+                    try {
+                        int ms = Integer.parseInt(v.trim());
+                        cfg.setScreenAudioLatencyMs(id.toString(), ms);
+                    } catch (Exception ignored) {
+                        // 输入非法：保持原值
+                    }
+                }));
+    }
+
+    private Button cycleButton(int cx, int y, int w, String label, Runnable onClick) {        return Button.builder(Component.literal(label),
                 btn -> {
                     onClick.run();
                     Minecraft.getInstance().execute(this::rebuildWidgets);

@@ -116,11 +116,14 @@ public class ClientConfig {
     public double audioFalloffExponent = 1.0;
 
     /**
-     * 音频设备输出延迟补偿（毫秒）：声卡帧位置是"已交给混音器"的时间，
-     * 实际出声还隔着系统混音/设备延迟（Windows 常见 100~300ms）。
-     * 不补偿会导致听感"声音比画面慢"。若补偿后变成画面比声音慢，调小此值。
+     * 全局音频输出延迟补偿（毫秒）：声卡帧位置是"已交给混音器"的时间，实际出声
+     * 还隔着系统混音/设备延迟。经实测多数机器设为 0 即对齐；若听感"声音比画面慢"，
+     * 调大此值；若"画面比声音慢"，调小（不得为负）。
      */
-    public double audioDeviceLatencyMs = 120.0;
+    public double audioDeviceLatencyMs = 0.0;
+
+    /** 每屏音频延迟补偿覆盖（屏幕 UUID → 毫秒；仅在与全局不同时记录）。 */
+    public java.util.Map<String, Integer> screenAudioLatencyMs = new java.util.HashMap<>();
 
     // ───────────── 播放列表 / 历史（客户端本机） ─────────────
 
@@ -197,6 +200,39 @@ public class ClientConfig {
             urlTitles.remove(key);
         } else {
             urlTitles.put(key, clean);
+        }
+        save();
+    }
+
+    /** 某屏音频延迟覆盖（未设置返回 null）。 */
+    public Integer rawScreenLatencyMs(String screenId) {
+        if (screenId == null || screenAudioLatencyMs == null) return null;
+        return screenAudioLatencyMs.get(screenId);
+    }
+
+    /**
+     * 某屏生效的音频延迟补偿：该屏有覆盖且与全局不同 → 用覆盖值；
+     * 否则用全局值（覆盖等于全局时等同全局）。
+     */
+    public int effectiveAudioLatencyMs(String screenId) {
+        Integer s = rawScreenLatencyMs(screenId);
+        int g = (int) Math.max(0, Math.min(500, audioDeviceLatencyMs));
+        if (s != null && s != g) {
+            return Math.max(0, Math.min(500, s));
+        }
+        return g;
+    }
+
+    /** 设置某屏音频延迟覆盖（与全局相同则清除覆盖=跟随全局），并保存。 */
+    public void setScreenAudioLatencyMs(String screenId, int ms) {
+        if (screenId == null) return;
+        if (screenAudioLatencyMs == null) screenAudioLatencyMs = new java.util.HashMap<>();
+        int g = (int) Math.max(0, Math.min(500, audioDeviceLatencyMs));
+        int v = Math.max(0, Math.min(500, ms));
+        if (v == g) {
+            screenAudioLatencyMs.remove(screenId);
+        } else {
+            screenAudioLatencyMs.put(screenId, v);
         }
         save();
     }
@@ -345,6 +381,7 @@ public class ClientConfig {
             if (instance.audioDeviceLatencyMs < 0) instance.audioDeviceLatencyMs = 0;
             if (instance.audioDeviceLatencyMs > 500) instance.audioDeviceLatencyMs = 500;
             if (instance.screenPlayMode == null) instance.screenPlayMode = new java.util.HashMap<>();
+            if (instance.screenAudioLatencyMs == null) instance.screenAudioLatencyMs = new java.util.HashMap<>();
             if (instance.defaultPlayMode < 0 || instance.defaultPlayMode > 3) instance.defaultPlayMode = 0;
             if (instance.screenPlaylist == null) instance.screenPlaylist = new java.util.HashMap<>();
             if (instance.urlNotes == null) instance.urlNotes = new java.util.HashMap<>();
