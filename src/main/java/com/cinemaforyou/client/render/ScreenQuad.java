@@ -217,7 +217,9 @@ public final class ScreenQuad {
         }
         surface = applyTilt(screen, surface);
         float[] displayVerts = offsetVerts(surface, offX, offY, offZ);
-        boolean curved = curvedGrid != null;
+        // 透明视频不走弧面网格、只画单面：半透明混合下双面共面竞争
+        // 会随视角产生频闪噪点（与最初 entityTranslucent 噪点同源）
+        boolean curved = curvedGrid != null && !alphaContent;
 
         // 光影适配（通用，无任何设置项）：满亮光照坐标 (240,240)。
         // 光影包会自行叠加太阳/阴影/方块光；我们这里把 lightmap 拉满，
@@ -271,7 +273,8 @@ public final class ScreenQuad {
         // 例外：检测到透明视频内容（真 alpha 素材）时切回混合管线以保留透明。
         boolean opaque = (mode != 4) && !alphaContent;
         RenderType renderType = opaque ? videoOpaqueRenderType(textureId) : videoRenderType(textureId);
-        boolean singleFace = mode == 4 && !alphaContent;
+        // 透明内容：只画朝向相机的那一面，避免双面半透明混合的频闪
+        boolean singleFace = (mode == 4 && !alphaContent) || alphaContent;
 
         // 曲面屏：网格化弧面提交（mode 4 调试单面仍走平面路径）
         if (curved && !singleFace) {
