@@ -2,6 +2,9 @@ package com.cinemaforyou.client.render;
 
 import com.cinemaforyou.data.CinemaScreen;
 import com.cinemaforyou.data.ScreenOrientation;
+import com.mojang.blaze3d.pipeline.ColorTargetState;
+import com.mojang.blaze3d.pipeline.DepthStencilState;
+import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.textures.FilterMode;
 import com.mojang.blaze3d.vertex.PoseStack;
@@ -18,6 +21,7 @@ import org.lwjgl.system.MemoryUtil;
 import java.nio.IntBuffer;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * 屏幕四边形几何 + 渲染（26.2 GPU 抽象 API）。
@@ -46,12 +50,94 @@ public final class ScreenQuad {
     /** 每纹理缓存一个视频 RenderType（26.2 RenderType 需以名字+setup 创建）。 */
     private static final Map<Identifier, RenderType> VIDEO_RENDER_TYPES = new HashMap<>();
 
+    /** 释放某纹理对应的 RenderType 缓存（VideoPlayer 释放纹理时调用，避免缓存无限增长）。 */
+    public static void releaseVideoRenderType(Identifier textureId) {
+        if (textureId == null) return;
+        VIDEO_RENDER_TYPES.remove(textureId);
+        // 光影下透明视频走的是另一个缓存键（translucent/...），必须一并移除，
+        // 否则每次重建播放器都会在这个表里漏一条
+        VIDEO_RENDER_TYPES.remove(Identifier.fromNamespaceAndPath(
+                "cinemaforyou", "translucent/" + textureId.getPath()));
+    }
+
     private ScreenQuad() {}
 
-    /** 视频 RenderType：ENTITY_TRANSLUCENT 管线 + Sampler0 显式三线性 CLAMP。 */
+    /**
+     * 透明视频专用管线：复制 ENTITY_TRANSLUCENT 的混合/深度/剔除状态，但把
+     * vanilla 的 PER_FACE_LIGHTING 宏换成 NO_CARDINAL_LIGHTING。
+     *
+     * <p>原因：ENTITY_TRANSLUCENT 定义了 PER_FACE_LIGHTING，entity.vsh 会按法线与
+     * 两个方向光做点积，再按 gl_FrontFacing 取正面/背面两套颜色。我们提交的 quad
+     * 法线恒为 (0,1,0) 且只画单面，点积累加值最低落到 ambient 0.4——不开光影时
+     * 画面被压暗到 40%~70%（用户反馈"透明内容很暗"）；光影包完全替换 shader
+     * 不受此宏影响，所以开光影反而正常。NO_CARDINAL_LIGHTING 让 vertexColor
+     * 直接等于顶点色（满亮），lightmap(uv2=240) 仍参与，画面与不透明管线一致。
+     */
+    private static volatile RenderPipeline alphaVideoPipeline;
+
+    private static RenderPipeline alphaVideoPipeline() {
+        RenderPipeline p = alphaVideoPipeline;
+        if (p != null) return p;
+        synchronized (ScreenQuad.class) {
+            if (alphaVideoPipeline != null) return alphaVideoPipeline;
+            RenderPipeline base = RenderPipelines.ENTITY_TRANSLUCENT;
+            // 颜色目标数组可能预留了 MRT 空洞，压缩成实际存在的目标
+            ColorTargetState[] src = base.getColorTargetStates();
+            int active = 0;
+            for (ColorTargetState s : src) if (s != null) active++;
+            ColorTargetState[] states = new ColorTargetState[active];
+            int j = 0;
+            for (ColorTargetState s : src) if (s != null) states[j++] = s;
+            // 继承 ENTITY_TRANSLUCENT 的深度状态（writeDepth=true），
+            // 不透明像素正常写深度以挡住后面的物体。
+            DepthStencilState ds = base.getDepthStencilState();
+            // 用 ALPHA_CUTOUT 而非禁用深度写入：
+            // 透明像素（alpha < 0.1）被 shader discard，不写深度，方块云能透过显示；
+            // 不透明像素正常写深度，画面仍能挡住后面的物体。
+            // 禁用深度写入会导致画面也挡不住云（云和画面融合）。
+            // NO_CARDINAL_LIGHTING：禁用方向光照，满亮显示（无光影下不压暗）。
+            net.minecraft.client.renderer.ShaderDefines defines =
+                    net.minecraft.client.renderer.ShaderDefines.builder()
+                            .define("ALPHA_CUTOUT", 0.1f)
+                            .define("NO_CARDINAL_LIGHTING")
+                            .build();
+            RenderPipeline.Snippet snippet = new RenderPipeline.Snippet(
+                    Optional.ofNullable(base.getVertexShader()),
+                    Optional.ofNullable(base.getFragmentShader()),
+                    Optional.of(defines),
+                    Optional.of(base.getBindGroupLayouts()),
+                    states, states.length,
+                    Optional.ofNullable(ds),
+                    Optional.ofNullable(base.getPolygonMode()),
+                    Optional.of(base.isCull()),
+                    base.getVertexFormatBindings(),
+                    Optional.of(base.getPrimitiveTopology()));
+            alphaVideoPipeline = RenderPipeline.builder(snippet)
+                    .withLocation("pipeline/cinemaforyou_alpha_video")
+                    .build();
+            registerPipeline(alphaVideoPipeline);
+            return alphaVideoPipeline;
+        }
+    }
+
+    /**
+     * 反射注册到 vanilla 的 PIPELINES_BY_LOCATION：资源重载（F3+T/切换光影）后
+     * vanilla 只重新编译该表中的管线；不注册的自定义管线重载后可能引用失效的
+     * GPU program。反射失败（映射变化等）静默忽略，首次运行不受影响。
+     */
+    @SuppressWarnings("unchecked")
+    private static void registerPipeline(RenderPipeline pipeline) {
+        try {
+            java.lang.reflect.Field f = RenderPipelines.class.getDeclaredField("PIPELINES_BY_LOCATION");
+            f.setAccessible(true);
+            ((Map<Identifier, RenderPipeline>) f.get(null)).put(pipeline.getLocation(), pipeline);
+        } catch (Throwable ignored) {}
+    }
+
+    /** 视频 RenderType：满亮半透明管线 + Sampler0 显式三线性 CLAMP。 */
     private static RenderType videoRenderType(Identifier textureId) {
         return VIDEO_RENDER_TYPES.computeIfAbsent(textureId, id -> {
-            RenderSetup setup = RenderSetup.builder(RenderPipelines.ENTITY_TRANSLUCENT)
+            RenderSetup setup = RenderSetup.builder(alphaVideoPipeline())
                     .withTexture("Sampler0", id,
                             () -> RenderSystem.getSamplerCache()
                                     .getClampToEdge(FilterMode.LINEAR, true))
@@ -62,6 +148,25 @@ public final class ScreenQuad {
                     .setOutline(RenderSetup.OutlineProperty.NONE)
                     .createRenderSetup();
             return RenderType.create("cinemaforyou_video", setup);
+        });
+    }
+
+    /** 光影下透明视频用：原生 ENTITY_TRANSLUCENT（Iris 可识别并替换 shader）。 */
+    private static RenderType vanillaTranslucentRenderType(Identifier textureId) {
+        Identifier cacheKey = Identifier.fromNamespaceAndPath(
+                "cinemaforyou", "translucent/" + textureId.getPath());
+        return VIDEO_RENDER_TYPES.computeIfAbsent(cacheKey, k -> {
+            RenderSetup setup = RenderSetup.builder(RenderPipelines.ENTITY_TRANSLUCENT)
+                    .withTexture("Sampler0", textureId,
+                            () -> RenderSystem.getSamplerCache()
+                                    .getClampToEdge(FilterMode.LINEAR, true))
+                    .useLightmap()
+                    .useOverlay()
+                    .affectsCrumbling()
+                    .sortOnUpload()
+                    .setOutline(RenderSetup.OutlineProperty.NONE)
+                    .createRenderSetup();
+            return RenderType.create("cinemaforyou_video_translucent", setup);
         });
     }
 
@@ -272,7 +377,18 @@ public final class ScreenQuad {
         // 不透明管线经实测无噪点且亮度正常（debugRenderMode=3 验证）。
         // 例外：检测到透明视频内容（真 alpha 素材）时切回混合管线以保留透明。
         boolean opaque = (mode != 4) && !alphaContent;
-        RenderType renderType = opaque ? videoOpaqueRenderType(textureId) : videoRenderType(textureId);
+        RenderType renderType;
+        if (opaque) {
+            renderType = videoOpaqueRenderType(textureId);
+        } else if (isShaderPackActive()) {
+            // 光影下使用原生 ENTITY_TRANSLUCENT：Iris 会识别并替换该管线的 shader，
+            // 自建的 alphaVideoPipeline（NO_CARDINAL_LIGHTING）管线名 Iris 不认识，
+            // 会被跳过替换导致光影下透明视频完全不显示。光影包会自行处理光照，
+            // 不会出现无光影时的压暗问题。
+            renderType = vanillaTranslucentRenderType(textureId);
+        } else {
+            renderType = videoRenderType(textureId);
+        }
         // 透明内容：只画朝向相机的那一面，避免双面半透明混合的频闪
         boolean singleFace = (mode == 4 && !alphaContent) || alphaContent;
 

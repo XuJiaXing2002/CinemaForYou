@@ -12,6 +12,7 @@ import net.fabricmc.api.Environment;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.resources.Identifier;
+import org.bytedeco.ffmpeg.global.avcodec;
 import org.bytedeco.ffmpeg.global.avutil;
 import org.bytedeco.javacv.FFmpegFrameGrabber;
 import org.bytedeco.javacv.Frame;
@@ -85,6 +86,11 @@ public class VideoPlayer {
     private static final long PRESENTATION_LEAD_MS = 100L;
     /** EOF 后等待音频收尾的最长时间，防止个别长尾音频让画面永远定格。 */
     private static final long EOF_MAX_WAIT_MS = 12_000L;
+    /** 小于该值的目标位置不用 setTimestamp seek，改用"重开 grabber"：
+     *  实测部分 WebM（VP9+alpha、带音轨）seek 到 0/极小目标会错误落到文件末尾的
+     *  关键帧（例如 15s 的视频落到 13360ms，复现稳定），而重新打开一定从 0 开始。
+     *  15s 内的短片重开只要十几毫秒，代价可忽略。 */
+    private static final long DIRECT_SEEK_MIN_MS = 500L;
 
     private final UUID screenId;
     private volatile CinemaScreen screen;
@@ -96,6 +102,10 @@ public class VideoPlayer {
     private Thread decodeThread;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean paused = new AtomicBoolean(false);
+    /** release() 是否已发起（幂等保护，handleStateChange/handleSync 可能重复调用）。 */
+    private volatile boolean releaseStarted = false;
+    /** release() 发起时刻（毫秒），上层对超时未排空的旧播放器做兜底丢弃。 */
+    private volatile long releasedAtMs = 0L;
 
     // ───────────── 帧槽（解码线程写、渲染线程读，frameLock 保护） ─────────────
     private final Object frameLock = new Object();
@@ -132,6 +142,33 @@ public class VideoPlayer {
     /** 已检测为透明视频（含 alpha<250 像素），渲染用混合管线。 */
     private volatile boolean translucentContent = false;
     private int alphaCheckFrames = 0;
+    /** WebM（VP8/VP9）透明通道探测：容器标记 alpha_mode=1 时必须换 libvpx
+     *  解码器，FFmpeg 原生 vp8/vp9 解码器会直接丢弃 alpha。每路视频只探测一次。 */
+    private boolean alphaDecoderProbed = false;
+    /** 探测命中的 libvpx 解码器名（"libvpx-vp9"/"libvpx"），null=用默认解码器。 */
+    private String alphaDecoderName;
+    /** 循环/起播时间线埋点：定位"延迟几秒"到底花在哪个阶段。
+     *  t0 = start()/restart() 时刻；首帧解码、首帧上屏分别打点，上屏时汇总输出一次。 */
+    private volatile long timelineT0Ms = 0L;
+    private volatile long timelineFirstDecodeMs = 0L;
+    private volatile boolean timelineLogged = false;
+    /** 音频门控累计等待（毫秒），时间线归因用。 */
+    private volatile long audioGateWaitedMs = 0L;
+    /** 循环次数（restart() 递增），日志里区分第几遍。 */
+    private int loopIndex = 0;
+    /** 上一代被释放的播放器：新一代打开原生 grabber 前必须等它把 grabber 释放完，
+     *  否则两代 grabber（尤其 H.264 原生 ↔ VP9/libvpx 软解）原生状态交叉，
+     *  会出现新播放器打不开/不吐帧（透明与不透明视频来回切换卡死的根因）。 */
+    private static final java.util.concurrent.atomic.AtomicReference<VideoPlayer> LAST_RELEASED =
+            new java.util.concurrent.atomic.AtomicReference<>();
+    /** 本实例的原生 grabber 是否已释放完毕（解码线程 finally 里 countDown）。 */
+    private final java.util.concurrent.CountDownLatch nativeClosed =
+            new java.util.concurrent.CountDownLatch(1);
+    /** alpha 探测结果静态缓存（按 resolvedUrl）：值为解码器名（命中）或空串（已探测无 alpha）。
+     *  循环播放重建 VideoPlayer 时复用，避免每次都双开 grabber 探测——
+     *  这是本地透明 WebM 循环延迟和反复打开 libvpx 累积卡死的关键修复点。 */
+    private static final java.util.Map<String, String> ALPHA_DECODER_CACHE =
+            new java.util.concurrent.ConcurrentHashMap<>();
     /** 渲染线程看门狗：已触发过补 seek（未恢复则升级为重开）。 */
     private volatile boolean resyncArmed = false;
     private volatile long resyncArmedAtMs = 0L;
@@ -139,6 +176,9 @@ public class VideoPlayer {
     private volatile long lastForcedActionAtMs = 0L;
     /** 音频门控：会话创建后等它真正出声的最长时间；超时画面先行（音频掉线时防永久黑屏）。 */
     private static final long AUDIO_GATE_MAX_MS = 3500L;
+    /** 本地源音频门控上限：本地文件音频启动不该有几秒延迟，800ms 足够；
+     *  超过即判定音频异常/无音频流，画面先行，避免本地视频循环重播被卡三四秒。 */
+    private static final long AUDIO_GATE_LOCAL_MAX_MS = 800L;
     /** 音频门控开始等待的时刻（0 = 未在等）。 */
     private volatile long audioGateStartMs = 0L;
     private volatile boolean audioGateLogged = false;
@@ -159,6 +199,12 @@ public class VideoPlayer {
     private long wallBaseWallMs;         // 墙钟回退的起点墙钟
     private long segmentStartMs;         // 当前片段起始媒体位置（seek 后重置）
 
+    /** 每个 VideoPlayer 实例的唯一序号，用于生成唯一 textureId。
+     *  防止同一屏幕的新旧播放器共用 textureId 时，旧播放器释放纹理把新播放器的也关掉。 */
+    private static final java.util.concurrent.atomic.AtomicLong INSTANCE_SEQ =
+            new java.util.concurrent.atomic.AtomicLong(0);
+    private final long instanceSeq = INSTANCE_SEQ.incrementAndGet();
+
     public VideoPlayer(UUID screenId, CinemaScreen screen, String sourceUrl) {
         this.screenId = screenId;
         this.screen = screen;
@@ -168,6 +214,13 @@ public class VideoPlayer {
 
     public String getSourceUrl() {
         return sourceUrl;
+    }
+
+    /** 是否本地源（非 http/https）：本地文件音频启动不该有几秒延迟，
+     *  用于音频门控选短时长，避免本地视频循环重播被卡三四秒。 */
+    private boolean isLocalSource() {
+        String s = sourceUrl;
+        return s != null && !s.startsWith("http://") && !s.startsWith("https://");
     }
 
     /** 该视频是否检测到透明内容（渲染用混合管线，避免黑底）。 */
@@ -210,6 +263,10 @@ public class VideoPlayer {
         wallBasePosMs = Math.max(0L, startPosMs);
         wallBaseWallMs = System.currentTimeMillis();
         segmentStartMs = wallBasePosMs;
+        timelineT0Ms = wallBaseWallMs;
+        timelineFirstDecodeMs = 0L;
+        timelineLogged = false;
+        audioGateWaitedMs = 0L;
         decodeThread = new Thread(() -> decodeLoop(startPosMs), "CinemaForYou-Decoder-" + screenId);
         decodeThread.setDaemon(true);
         decodeThread.start();
@@ -243,12 +300,23 @@ public class VideoPlayer {
     }
 
     public void release() {
+        if (releaseStarted) return; // 幂等：handleStateChange/handleSync 可能重复调用
+        releaseStarted = true;
+        releasedAtMs = System.currentTimeMillis();
         running.set(false);
         if (decodeThread != null) {
             decodeThread.interrupt();
-            // 只短暂等待：解码线程若阻塞在原生读取中会自行在 finally 清理，
-            // 绝不让主线程长时间 join 或跨线程释放原生 grabber（防卡死）
-            try { decodeThread.join(200); } catch (InterruptedException ignored) {}
+            // 只短暂等待：真正的"旧 grabber 先释放、新 grabber 后打开"顺序由
+            // LAST_RELEASED + nativeClosed 在新播放器的解码线程上保证（见 awaitPreviousNativeClose），
+            // 这里若长等会卡住调用线程（网络包处理/渲染线程），表现为切视频时整体卡顿。
+            long joinMs = 100L;
+            try { decodeThread.join(joinMs); } catch (InterruptedException ignored) {}
+        }
+        LAST_RELEASED.set(this);
+        // 解码线程若已退出，grabber 已由它自己的 finally 释放（latch 已 countDown）；
+        // 若仍存活，则由它退出时释放并 countDown。这里只兜底处理"从未启动过线程"的情况。
+        if (decodeThread == null) {
+            nativeClosed.countDown();
         }
         // 等解码线程退出后再收尾，避免其刚创建的音频会话成为孤儿
         if (audioPlayer != null) {
@@ -266,6 +334,16 @@ public class VideoPlayer {
         pendingRelease = true;
     }
 
+    /** release() 是否已发起（幂等/排空判断用）。 */
+    public boolean isReleaseStarted() {
+        return releaseStarted;
+    }
+
+    /** release() 发起时刻（毫秒），上层据此对超时未排空的旧播放器做兜底丢弃。 */
+    public long getReleasedAtMs() {
+        return releasedAtMs;
+    }
+
     private void releaseTexture() {
         if (texture != null) {
             texture.close();
@@ -273,7 +351,75 @@ public class VideoPlayer {
         }
         if (textureId != null) {
             Minecraft.getInstance().getTextureManager().release(textureId);
+            // 清理 ScreenQuad 中该纹理对应的 RenderType 缓存（每个实例唯一 textureId，
+            // 不复用，需同步释放避免缓存无限增长）
+            com.cinemaforyou.client.render.ScreenQuad.releaseVideoRenderType(textureId);
             textureId = null;
+        }
+    }
+
+    /**
+     * 循环重播：复用当前 VideoPlayer 实例，重置播放状态后让解码线程重开 grabber 到 0。
+     *
+     * <p>相比 release() + new VideoPlayer() 的重建方式，复用实例能：
+     * <ul>
+     *   <li>保证旧 grabber 在同一解码线程内同步 stop+release 后再开新的，
+     *       避免跨线程 release 的 join(200) 抢不出 native grab 导致的资源泄漏累积
+     *       （循环 2-3 次后 libvpx 打不开、画面卡死的根因）；</li>
+     *   <li>不反复创建/销毁 javacv 对象，减少 native 引用计数抖动。</li>
+     * </ul>
+     *
+     * <p>解码线程已退出时回退为 start(0) 重新启动。
+     */
+    public void restart() {
+        // 重置 EOF / 结束报告状态
+        videoEofAtMs = -1L;
+        endReported = false;
+        error = null;
+        errorReported = false;
+        // 重置音频会话（循环重播要从头出声）
+        if (audioPlayer != null) {
+            audioPlayer.stop();
+            audioPlayer = null;
+        }
+        // 重置时钟到起点
+        wallFallback = true;
+        wallBasePosMs = 0L;
+        wallBaseWallMs = System.currentTimeMillis();
+        segmentStartMs = 0L;
+        masterPosMs = 0L;
+        // 重置帧上传跟踪与看门狗
+        lastUploadAtMs = 0L;
+        resyncArmed = false;
+        resyncArmedAtMs = 0L;
+        audioGateStartMs = 0L;
+        audioGateLogged = false;
+        // 时间线埋点：记录本轮循环的起点，首帧上屏时输出各阶段耗时
+        loopIndex++;
+        timelineT0Ms = System.currentTimeMillis();
+        timelineFirstDecodeMs = 0L;
+        timelineLogged = false;
+        audioGateWaitedMs = 0L;
+        // 重置解码线程私有状态（解码线程会读这些字段）
+        firstPtsUs = -1L;
+        lastPtsUs = -1L;
+        consecutiveNulls = 0;
+        seekFixTries = 0;
+        // 注意：不重置 translucentContent——同一 URL 重播，透明属性不会变。
+        // 重置后头几帧 alpha 扫描未完成期间渲染管线会短暂用不透明模式，
+        // 带 alpha 的帧被直接绘制，绿幕会闪现一两帧。保留标志从头就走混合管线。
+        if (isDecoderAlive()) {
+            // 复用解码线程：请求重开 grabber 到片段起点（0）
+            reopenRequested = true;
+            LOGGER.info("[CinemaForYou] 屏幕 {} 循环重播：复用解码线程重开 grabber", screenId);
+        } else {
+            // 解码线程已退出（异常/老死）：重新启动
+            running.set(true);
+            paused.set(false);
+            decodeThread = new Thread(() -> decodeLoop(0L), "CinemaForYou-Decoder-" + screenId);
+            decodeThread.setDaemon(true);
+            decodeThread.start();
+            LOGGER.info("[CinemaForYou] 屏幕 {} 循环重播：解码线程已退出，重新启动", screenId);
         }
     }
 
@@ -305,8 +451,10 @@ public class VideoPlayer {
                     && (videoResolvedUrl.startsWith("http://")
                         || videoResolvedUrl.startsWith("https://"));
             try {
+                awaitPreviousNativeClose();
                 grabber = openConfiguredGrabber(videoResolvedUrl);
                 grabber.start();
+                grabber = switchToVpxAlphaDecoder(grabber, videoResolvedUrl, true);
             } catch (Exception firstOpen) {
                 if (httpDirect && UrlResolver.ffmpegHttpHeaders(sourceUrl, videoResolvedUrl) != null) {
                     LOGGER.warn("[CinemaForYou] 带头部打开失败({})，尝试无自定义请求头重试: {}",
@@ -315,8 +463,10 @@ public class VideoPlayer {
                         if (grabber != null) {
                             try { grabber.release(); } catch (Exception ignored) {}
                         }
+                        awaitPreviousNativeClose();
                         grabber = openConfiguredGrabber(videoResolvedUrl, false);
                         grabber.start();
+                        grabber = switchToVpxAlphaDecoder(grabber, videoResolvedUrl, false);
                     } catch (Exception e2) {
                         throw e2; // 二次也失败：抛原异常路径
                     }
@@ -343,7 +493,17 @@ public class VideoPlayer {
             // #endregion
 
             if (startPosMs > 0) {
-                if (!safeSeek(startPosMs)) {
+                long startTarget = startPosMs;
+                if (durationMs > 0 && startTarget >= durationMs) {
+                    LOGGER.warn("[CinemaForYou] 起始位置 {}ms 已超过时长 {}ms，按从头播放处理",
+                            startTarget, durationMs);
+                    startTarget = 0L;
+                }
+                if (startTarget < DIRECT_SEEK_MIN_MS) {
+                    // 小目标（含"从头播放"）：刚打开的 grabber 本来就在 0，直接跳过 seek。
+                    // 这一档位置 setTimestamp 在部分 WebM 上会错误跳到末尾（实测复现）。
+                    LOGGER.info("[CinemaForYou] 起始位置 {}ms 很小，直接从 0 开始（跳过 seek）", startTarget);
+                } else if (!safeSeek(startTarget)) {
                     // 流不支持 seek（HLS 等）：标记后直接从流起点播放，
                     // 且不再启用"落点超前"回溯逻辑（那套是给精确 seek 的 mp4 用的）
                     seekCapable = false;
@@ -491,6 +651,15 @@ public class VideoPlayer {
                         LOGGER.warn("[CinemaForYou] seek 落点超前：画面 {}ms 音频 {}ms，"
                                         + "向后退到 {}ms 重试",
                                 firstMs, segmentStartMs, backTarget);
+                        if (backTarget < DIRECT_SEEK_MIN_MS) {
+                            // 目标太小：setTimestamp 在部分 WebM 上会错误落到末尾（实测复现），
+                            // 改为整体重开——新 grabber 从 0 开始，等价于回到开头
+                            LOGGER.warn("[CinemaForYou] seek 落点超前且目标 {}ms 过小，改为重开解码流",
+                                    backTarget);
+                            reopenRequested = true;
+                            consecutiveNulls = 0;
+                            continue;
+                        }
                         if (seekGrabber(grabber, backTarget)) {
                             lastSeekHandledAtMs = System.currentTimeMillis();
                             consecutiveNulls = 0;
@@ -545,6 +714,8 @@ public class VideoPlayer {
                 try { grabber.release(); } catch (Exception ignored) {}
                 grabber = null;
             }
+            // 原生 grabber 已释放完毕：唤醒可能在等它的新播放器（见 LAST_RELEASED）
+            nativeClosed.countDown();
         }
     }
 
@@ -605,7 +776,19 @@ public class VideoPlayer {
     /** 处理一次 seek：重置 PTS 映射、清空排队帧、重锚时钟基准。 */
     private void applySeek(long targetMs) {
         pendingSeekMs = -1L;
-        if (!safeSeek(targetMs)) {
+        if (durationMs > 0 && targetMs >= durationMs) {
+            // 目标超出片尾（服务端位置残留/进度越界）：按从头播放处理，
+            // 否则 seek 到片尾之后会一直抓不到帧（日志里"seek 后连续空帧"死循环）
+            LOGGER.warn("[CinemaForYou] seek 目标 {}ms 已超过时长 {}ms，按从头播放处理",
+                    targetMs, durationMs);
+            targetMs = 0L;
+        }
+        if (targetMs < DIRECT_SEEK_MIN_MS) {
+            // 回开头/小目标：setTimestamp 在部分 WebM 上会错误落到末尾关键帧（实测），
+            // 改为整体重开解码流——新 grabber 天然从 0 开始，随后帧会快速追上目标
+            reopenRequested = true;
+            LOGGER.info("[CinemaForYou] seek 目标 {}ms 很小，改为重开解码流回到开头", targetMs);
+        } else if (!safeSeek(targetMs)) {
             // 本次 seek 失败：该流不支持精确定位（HLS 等），标记后不再回溯重试
             seekCapable = false;
             // 标记重开解码流（reopen 时会再次尝试定位）
@@ -641,10 +824,23 @@ public class VideoPlayer {
                     + NativeRuntime.failureReason());
         }
         FFmpegFrameGrabber g = new FFmpegFrameGrabber(url);
+        String dec = alphaDecoderName;
+        if (dec == null) {
+            // 实例未探测过：查静态缓存（循环重建 VideoPlayer 时命中可省掉双开探测，
+            // openConfiguredGrabber 这次直接用 libvpx 打开，switchToVpxAlphaDecoder
+            // 见缓存命中直接 return，不再 stop+release+重开）
+            String cached = ALPHA_DECODER_CACHE.get(url);
+            if (cached != null && !cached.isEmpty()) dec = cached;
+        }
+        if (dec != null) {
+            // WebM 透明通道（alpha_mode=1）只有 libvpx 解码器能解出来
+            g.setVideoCodecName(dec);
+        }
         g.setOption("rtsp_transport", "tcp");
-        // 强制 BGRA：保留 alpha 通道（透明视频素材用；普通视频 alpha 恒 255，
-        // 与旧 BGR24 行为一致，仅多一个字节的搬运）
-        g.setPixelFormat(avutil.AV_PIX_FMT_BGRA);
+        // 强制 RGBA：保留 alpha 通道（透明视频素材用）。选 RGBA 而非 BGRA 是为了让
+        // 内存字节序与 Minecraft 纹理要求的完全一致，解码线程可以整块 int 拷贝，
+        // 省掉原先逐像素的 Java 通道交换（1080p 每帧约 5ms，占解码线程三成开销）。
+        g.setPixelFormat(avutil.AV_PIX_FMT_RGBA);
         int decodeHeight = effectiveDecodeHeight(screen);
         if (decodeHeight > 0) {
             // 只缩小不放大：高度取 min(decodeHeight, ih)，宽度 -2 自动取偶数
@@ -672,6 +868,103 @@ public class VideoPlayer {
     }
 
     /**
+     * 首次打开后探测：WebM（VP8/VP9）容器声明 alpha_mode=1 时，透明通道只有
+     * libvpx 解码器能解出来——FFmpeg 原生 vp8/vp9 解码器会直接丢弃 alpha
+     * （画面照常播，但透明背景变成不透明底）。命中则换解码器重开一次，
+     * 判定结果缓存，后续重开解码流自动复用。
+     *
+     * <p>只对这些文件换解码器：绝不全局强设解码器名——H.264 等编码强推
+     * libvpx 会在 avcodec_open2 直接失败，整个视频打不开。
+     */
+    private FFmpegFrameGrabber switchToVpxAlphaDecoder(FFmpegFrameGrabber g, String url,
+            boolean withSourceHeaders) throws Exception {
+        if (alphaDecoderProbed) return g;
+        alphaDecoderProbed = true;
+        // 静态缓存命中：同一源之前已探测过，openConfiguredGrabber 已按缓存设好解码器，
+        // 无需再 stop+release+重开 grabber（这是循环播放延迟和 libvpx 累积卡死的关键）
+        String cached = ALPHA_DECODER_CACHE.get(url);
+        if (cached != null) {
+            if (!cached.isEmpty()) alphaDecoderName = cached;
+            return g;
+        }
+        // 先认编码：只有 VP8/VP9 才可能涉及 libvpx 切换。
+        // 非 VP8/VP9 永久缓存空串（H.264 等强推 libvpx 会 avcodec_open2 失败）。
+        int codec = g.getVideoCodec();
+        String decoder = codec == avcodec.AV_CODEC_ID_VP9 ? "libvpx-vp9"
+                : codec == avcodec.AV_CODEC_ID_VP8 ? "libvpx" : null;
+        if (decoder == null) {
+            ALPHA_DECODER_CACHE.put(url, ""); // 非 VP8/VP9：永久跳过
+            return g;
+        }
+        // 读容器 alpha 标记。读不到（瞬时异常/null）时保守处理：VP8/VP9 一律切 libvpx——
+        // libvpx 解普通无 alpha 的 VP8/VP9 也完全正常（仅软解稍慢），但能保证 alpha
+        // 绝不因元数据读取失败而被原生解码器丢弃。只有"明确读到 0"才确信无 alpha。
+        String alphaMode = null;
+        boolean metaReadFailed = false;
+        try {
+            alphaMode = g.getVideoMetadata("alpha_mode");
+        } catch (Exception e) {
+            metaReadFailed = true;
+        }
+        if (!metaReadFailed
+                && (alphaMode == null || "0".equals(alphaMode.trim()) || alphaMode.trim().isEmpty())) {
+            // 明确无 alpha：永久缓存空串，用原生解码器播放
+            ALPHA_DECODER_CACHE.put(url, "");
+            return g;
+        }
+
+        LOGGER.info("[CinemaForYou] VP8/VP9 源切换 {} 解码器保 alpha（alpha_mode={}）: {}",
+                decoder, metaReadFailed ? "读取失败,保守切换" : String.valueOf(alphaMode),
+                trimForLog(url));
+        try {
+            // 只 release 不 stop：JavaCV 的 release() 内部已包含 close/stop 逻辑，
+            // 显式再调 stop() 在某些 FFmpeg 版本下会重复关闭 codec context，
+            // 导致 native 状态异常、新 grabber 打开后首帧永久阻塞（首次播放卡死的根因之一）。
+            try { g.release(); } catch (Exception ignored) {}
+            // 短暂让出，让 native 侧完成解码器上下文销毁，避免新旧 grabber 资源竞争
+            Thread.sleep(50);
+            alphaDecoderName = decoder;
+            awaitPreviousNativeClose();
+            FFmpegFrameGrabber g2 = openConfiguredGrabber(url, withSourceHeaders);
+            g2.start();
+            // 成功才写缓存：瞬时 native 资源紧张导致 start 失败时绝不写空串，
+            // 否则该 URL 会被永久污染为"原生解码器"——循环几十遍后偶发不透明
+            // （绿幕重现）的根因。下次重建实例会重新尝试 libvpx。
+            ALPHA_DECODER_CACHE.put(url, decoder);
+            return g2;
+        } catch (Exception e) {
+            // 换解码器失败：本次回退默认解码器继续播放（背景不透明，但画面正常）。
+            // 不写缓存：这是瞬时失败，下次循环重建必须重新尝试 libvpx。
+            alphaDecoderName = null;
+            LOGGER.warn("[CinemaForYou] libvpx 解码器重开失败（瞬时，不缓存），本次回退默认解码器: {}",
+                    String.valueOf(e.getMessage()));
+            FFmpegFrameGrabber fallback = openConfiguredGrabber(url, withSourceHeaders);
+            fallback.start();
+            return fallback;
+        }
+    }
+
+    /**
+     * 等上一代播放器把原生 grabber 释放完，再打开自己的。
+     *
+     * <p>切换视频（尤其透明 VP9/libvpx ↔ 不透明 H.264）时，旧实例的 grabber 由它的解码
+     * 线程在 finally 里释放；若新实例抢先打开，两代原生解码器状态交叉会导致新播放器
+     * 打不开/不吐帧（画面卡在上一帧）。这里最多等 2s，超时也继续（最坏退化为旧行为），
+     * 等待发生在新播放器自己的解码线程上，不阻塞游戏主线程。
+     */
+    private static void awaitPreviousNativeClose() {
+        VideoPlayer prev = LAST_RELEASED.get();
+        if (prev == null) return;
+        try {
+            if (!prev.nativeClosed.await(2000, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                LOGGER.warn("[CinemaForYou] 上一代 grabber 未在 2s 内释放完，仍继续打开新的（可能卡顿）");
+            }
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
      * （解码线程内）整体重开解码流并定位到片段起点。
      * 用于：seek 连续失败、滚帧卡死、渲染端看门狗升级等情况。
      */
@@ -683,14 +976,24 @@ public class VideoPlayer {
             FFmpegFrameGrabber old = grabber;
             grabber = null;
             if (old != null) {
-                try { old.stop(); } catch (Exception ignored) {}
+                // 只 release 不 stop：release 内部已 close，重复 stop 可能导致 native 状态异常
                 try { old.release(); } catch (Exception ignored) {}
             }
             if (videoResolvedUrl == null) return;
+            // 上次探测若因瞬时失败没拿到 libvpx 解码器（alphaDecoderName==null 且缓存
+            // 无结论），允许重新探测一次——否则实例一旦 fallback 到原生解码器，
+            // alphaDecoderProbed=true 会让后续每次循环都永远丢 alpha（绿幕重现）。
+            if (alphaDecoderName == null && !ALPHA_DECODER_CACHE.containsKey(videoResolvedUrl)) {
+                alphaDecoderProbed = false;
+            }
+            awaitPreviousNativeClose();
             FFmpegFrameGrabber g = openConfiguredGrabber(videoResolvedUrl);
             g.start();
+            g = switchToVpxAlphaDecoder(g, videoResolvedUrl, true);
             long target = Math.max(0L, segmentStartMs);
-            boolean ok = seekGrabber(g, target);
+            // 小目标不 seek：新 grabber 已在 0，直接解码让 PTS 追上目标即可
+            // （这一档 setTimestamp 在部分 WebM 上会错误跳到末尾，实测复现）
+            boolean ok = target >= DIRECT_SEEK_MIN_MS && seekGrabber(g, target);
             grabber = g;
             lastSeekHandledAtMs = System.currentTimeMillis();
             if (!ok) {
@@ -752,7 +1055,18 @@ public class VideoPlayer {
             wallBasePosMs = masterPosMs;
             wallBaseWallMs = nowWall;
         } else {
-            masterPosMs = wallBasePosMs + (nowWall - wallBaseWallMs);
+            long newMaster = wallBasePosMs + (nowWall - wallBaseWallMs);
+            // 钳制：墙钟回退不得超过已知时长——grabber 卡死不返回帧也不 EOF 时，
+            // 墙钟会无限增长导致进度条跑出视频总时间（用户反馈"15秒视频卡死后
+            // 进度条继续走到 20+ 秒"）。限制在 durationMs，让画面停在末帧状态，
+            // 等看门狗/循环逻辑处理。
+            if (durationMs > 0 && newMaster > durationMs) {
+                newMaster = durationMs;
+                // 锚到时长，避免每拍都触发钳制（减少漂移修正抖动）
+                wallBasePosMs = durationMs;
+                wallBaseWallMs = nowWall;
+            }
+            masterPosMs = newMaster;
         }
     }
 
@@ -911,6 +1225,7 @@ public class VideoPlayer {
             slotDueMs[i] = Math.max(0L, dueAbsMs);
         }
         lastFrameAtMs = System.currentTimeMillis();
+        if (timelineFirstDecodeMs == 0L) timelineFirstDecodeMs = lastFrameAtMs;
         return true;
     }
 
@@ -980,7 +1295,14 @@ public class VideoPlayer {
         if (frame.imageDepth != Frame.DEPTH_UBYTE) return false;
 
         ByteBuffer src = srcRaw.duplicate();
-        int stride = frame.imageStride > 0 ? frame.imageStride : w * 3;
+        int stride = frame.imageStride > 0 ? frame.imageStride : w * 4;
+        // 快路径：RGBA 打包格式 + 行内无填充 => 字节序已与纹理要求一致，
+        // 整块 int 拷贝即可（零逐像素开销）
+        if (stride == w * 4 && src.capacity() >= w * h * 4) {
+            IntBuffer ib = src.order(java.nio.ByteOrder.nativeOrder()).asIntBuffer();
+            ib.get(dest, 0, w * h);
+            return true;
+        }
         int bpp = stride / w;                 // 3=BGR24, 4=BGRA
         if (bpp != 3 && bpp != 4) {
             return convertViaAwt(frame, dest, w, h);
@@ -1068,13 +1390,17 @@ public class VideoPlayer {
             if (audioGateStartMs == 0L) {
                 audioGateStartMs = nowGate;
             }
-            if (nowGate - audioGateStartMs < AUDIO_GATE_MAX_MS) {
+            // 本地源用短门控：本地文件音频启动不该等几秒，超过即画面先行。
+            // 网络/在线源仍给足 3.5s（远程音频握手+缓冲确实需要时间）。
+            long gateMax = isLocalSource() ? AUDIO_GATE_LOCAL_MAX_MS : AUDIO_GATE_MAX_MS;
+            if (nowGate - audioGateStartMs < gateMax) {
                 return;
             }
             if (!audioGateLogged) {
                 audioGateLogged = true;
+                audioGateWaitedMs = nowGate - audioGateStartMs;
                 LOGGER.warn("[CinemaForYou] 音频 {}ms 仍未出声，画面先行呈现（音频可能无响应）",
-                        AUDIO_GATE_MAX_MS);
+                        gateMax);
             }
         } else {
             audioGateStartMs = 0L;
@@ -1083,11 +1409,15 @@ public class VideoPlayer {
         // ── 冻结看门狗：画面长时间没更新但音频在走（连续快速 seek 卡死场景） ──
         // 判据用"实际显示帧"（lastUploadAtMs），解码线程正常但不显示同样能触发：
         // 第一步补 seek 到当前音频位置；仍不显示则升级为整体重开解码流（带 3s 冷却）。
+        // 无音频流的透明视频（转换生成的 WebM）循环重开后如果首帧没成功上传，
+        // 旧看门狗因"lastUploadAtMs==0"和"无音频"两个前置条件不满足而永远不触发，
+        // 导致画面永久冻结。此处补一条独立的"启动后无帧"重开路径。
         if (error == null && videoEofAtMs <= 0 && running.get() && !paused.get()
-                && lastUploadAtMs > 0L
                 && decodeThread != null && decodeThread.isAlive()) {
             long nowMs = System.currentTimeMillis();
-            long idle = nowMs - lastUploadAtMs;
+            // 基准：已上传过帧用 lastUploadAtMs；否则用 VideoPlayer 启动时间 wallBaseWallMs
+            long idleBase = lastUploadAtMs > 0L ? lastUploadAtMs : wallBaseWallMs;
+            long idle = nowMs - idleBase;
             if (idle > 2500) {
                 AudioPlayer aa = audioPlayer;
                 boolean audioMoving = aa != null && aa.hasLiveAudio();
@@ -1104,6 +1434,15 @@ public class VideoPlayer {
                         reopenRequested = true;
                         LOGGER.warn("[CinemaForYou] 补 seek 后画面仍未更新，重开解码流");
                     }
+                } else if (lastUploadAtMs == 0L
+                        && nowMs - wallBaseWallMs > 3500
+                        && nowMs - lastForcedActionAtMs > 3000) {
+                    // 无音频流且从未成功上传帧（典型：循环播放重开的透明 WebM）：
+                    // 本地文件初始化用不了几秒，3.5s 仍无画面即判定异常，直接重开解码流。
+                    // 原 8s 太慢，会让用户明显感觉"卡住后等很久才恢复"。
+                    lastForcedActionAtMs = nowMs;
+                    reopenRequested = true;
+                    LOGGER.warn("[CinemaForYou] 无音频流且 {}ms 内无画面上传，重开解码流", idle);
                 }
             } else if (idle < 200) {
                 resyncArmed = false;
@@ -1142,7 +1481,7 @@ public class VideoPlayer {
         if (texture == null) {
             texture = new VideoFrameTexture("cinema_" + screenId);
             texture.init(w, h);
-            textureId = Identifier.fromNamespaceAndPath("cinemaforyou", "video/" + screenId);
+            textureId = Identifier.fromNamespaceAndPath("cinemaforyou", "video/" + screenId + "_" + instanceSeq);
             Minecraft.getInstance().getTextureManager().register(textureId, texture);
             LOGGER.info("[CinemaForYou] 屏幕 {} 纹理已创建 ({}x{}, {} mip)", screenId, w, h, texture.levelCount());
         } else if (texture.levelCount() != chain.length
@@ -1150,7 +1489,7 @@ public class VideoPlayer {
             releaseTexture();
             texture = new VideoFrameTexture("cinema_" + screenId);
             texture.init(w, h);
-            textureId = Identifier.fromNamespaceAndPath("cinemaforyou", "video/" + screenId);
+            textureId = Identifier.fromNamespaceAndPath("cinemaforyou", "video/" + screenId + "_" + instanceSeq);
             Minecraft.getInstance().getTextureManager().register(textureId, texture);
             LOGGER.info("[CinemaForYou] 屏幕 {} 纹理已重建 ({}x{}, {} mip)", screenId, w, h, texture.levelCount());
         }
@@ -1166,6 +1505,16 @@ public class VideoPlayer {
             }
             texture.uploadAll();
             lastUploadAtMs = System.currentTimeMillis();
+            // 时间线汇总：起播/循环重启 → 首帧解码 → 画面上屏，把"延迟几秒"归因到具体阶段
+            if (!timelineLogged && timelineT0Ms > 0L && timelineFirstDecodeMs > 0L) {
+                timelineLogged = true;
+                LOGGER.info("[CinemaForYou] 时间线{}(循环#{}): 重启→解码首帧 {}ms，解码→上屏 {}ms，合计 {}ms（音频门控等待 {}ms）",
+                        loopIndex > 0 ? "" : "起播", loopIndex,
+                        timelineFirstDecodeMs - timelineT0Ms,
+                        lastUploadAtMs - timelineFirstDecodeMs,
+                        lastUploadAtMs - timelineT0Ms,
+                        audioGateWaitedMs);
+            }
         } catch (Throwable t) {
             LOGGER.error("[CinemaForYou] 纹理上传失败", t);
             error = "纹理上传失败: " + t.getMessage();
@@ -1237,6 +1586,12 @@ public class VideoPlayer {
      */
     private void handleEndOfVideo() {
         endReported = true;
+        // 时间线：EOF 到真正执行"播完动作"（循环/下一集）之间等了多久——
+        // 循环模式的延迟主要就出在这一段（等音频收尾，最长 EOF_MAX_WAIT_MS）
+        if (videoEofAtMs > 0) {
+            LOGGER.info("[CinemaForYou] 播完处理: EOF 后等待 {}ms 再执行播完动作（循环/下一集/停止）",
+                    System.currentTimeMillis() - videoEofAtMs);
+        }
         CinemaScreen sc = screen;
         LocalPlayer player = Minecraft.getInstance().player;
         if (sc == null || player == null) return;

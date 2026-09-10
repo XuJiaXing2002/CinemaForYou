@@ -36,6 +36,15 @@ public class ClientScreenManager {
     private final Map<UUID, CinemaScreen> screens = new HashMap<>();
     private final Map<UUID, ClientState> states = new HashMap<>();
     private final Map<UUID, VideoPlayer> players = new HashMap<>();
+    /**
+     * 已 release 但纹理/GPU 资源尚待渲染线程释放的旧播放器。
+     *
+     * <p>{@link VideoPlayer#release()} 只设置 pendingRelease 标志，真正的纹理释放要在
+     * 渲染线程的 tick() 里完成；但旧播放器已从 {@link #players} 移除，若直接丢弃就再没人
+     * tick 它，纹理会永久泄漏（每次切视频漏一个 GpuTexture，多次切换后触发资源压力/
+     * 新播放器首帧黑屏）。这里保留引用，每帧继续 tick 直到纹理释放完再丢弃。
+     */
+    private final java.util.List<VideoPlayer> draining = new java.util.ArrayList<>();
     /** 每个屏最近一次写入历史记录的 URL（避免 5s 周期广播重复记录）。 */
     private final Map<UUID, String> lastRecordedUrl = new HashMap<>();
 
@@ -260,8 +269,7 @@ public class ClientScreenManager {
                 ClientState st = states.get(id);
                 long restartPos = player.getPositionMs();
                 String sourceUrl = player.getSourceUrl();
-                player.release();
-                players.remove(id);
+                retirePlayer(id);
                 if (sourceUrl != null && !sourceUrl.isEmpty()) {
                     VideoPlayer restarted = new VideoPlayer(id, newScreen, sourceUrl);
                     restarted.start(restartPos);
@@ -316,9 +324,12 @@ public class ClientScreenManager {
                         long dur = existing.getDurationMs();
                         boolean restart = dur <= 0 || expectedPos < Math.max(1000L, dur - 1500L);
                         if (restart) {
-                            existing.release();
-                            players.remove(id);
-                            ensurePlayer(id, st.sourceUrl, expectedPos);
+                            // 循环重播：复用实例（restart）而非 release+new。
+                            // release() 的 join(200) 抢不出阻塞在 native grab 的解码线程，
+                            // 旧 grabber 未释放就 new 新实例，2-3 次循环后 native 资源泄漏
+                            // 累积导致 libvpx 打不开、画面卡死。restart 在同一解码线程内
+                            // 同步 stop+release 旧 grabber 再开新的，彻底避免泄漏。
+                            existing.restart();
                         }
                         return;
                     }
@@ -327,8 +338,7 @@ public class ClientScreenManager {
                     if (!existing.isDecoderAlive() && existing.getDurationMs() != 0L
                             && !existing.hasEnded()) {
                         LOGGER.warn("屏幕 {} 解码线程已退出，自动重建播放器恢复", id);
-                        existing.release();
-                        players.remove(id);
+                        retirePlayer(id);
                         ensurePlayer(id, st.sourceUrl, expectedPos);
                         return;
                     }
@@ -368,9 +378,32 @@ public class ClientScreenManager {
 
     /** 每帧调用：更新 VideoPlayer 纹理。 */
     public void tick() {
+        // 先排空已移除的旧播放器：它们的 tick() 负责在渲染线程释放纹理
+        if (!draining.isEmpty()) {
+            long now = System.currentTimeMillis();
+            draining.removeIf(vp -> {
+                vp.tick(); // tick() 见到 pendingRelease 会执行 releaseTexture() 并返回
+                // 纹理已释放即清理完成；解码线程本地源已在 release() 同步 join 等过，
+                // 网络源最多兜底保留 20s 后强制丢弃（防列表无限增长）
+                boolean textureDone = vp.getTextureId() == null;
+                boolean timeout = now - vp.getReleasedAtMs() > 20_000L;
+                return textureDone || timeout;
+            });
+        }
         for (VideoPlayer vp : players.values()) {
             vp.tick();
         }
+    }
+
+    /**
+     * 停止并移除某屏播放器，同时把旧实例放入排空队列，
+     * 保证其纹理在渲染线程被真正释放（调用方均在客户端主线程）。
+     */
+    private void retirePlayer(UUID id) {
+        VideoPlayer vp = players.remove(id);
+        if (vp == null) return;
+        vp.release();
+        draining.add(vp);
     }
 
     /** 记录一次"开始播放某源"到客户端历史（同一屏同一 URL 只记一次）。 */
@@ -391,10 +424,9 @@ public class ClientScreenManager {
     private void ensurePlayer(UUID id, String sourceUrl, long startPos) {
         VideoPlayer existing = players.get(id);
         if (existing != null) {
-            // URL 变了则重建
+            // URL 变了则重建（旧实例进排空队列释放纹理，并同步等旧解码线程退出）
             if (!sourceUrl.equals(existing.getSourceUrl())) {
-                existing.release();
-                players.remove(id);
+                retirePlayer(id);
             } else {
                 existing.resume();
                 return;
@@ -414,8 +446,7 @@ public class ClientScreenManager {
     }
 
     private void stopAndRemovePlayer(UUID id) {
-        VideoPlayer vp = players.remove(id);
-        if (vp != null) vp.release();
+        retirePlayer(id);
     }
 
     private static Double rayHitDistance(CinemaScreen screen, Vec3 eyePos, Vec3 lookDir, double maxDistance) {

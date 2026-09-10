@@ -62,6 +62,10 @@ public class AudioPlayer {
     private volatile boolean started = false;
     private volatile boolean liveAudio = false;   // 已真正写出过音频数据
     private volatile boolean finished = false;    // 已播完（含排空）
+    /** 媒体总时长（毫秒），用于判断"真的播到结尾"；0 = 未知。 */
+    private long durationMs = 0L;
+    /** 连续空帧计数：交错容器里 grabSamples 会间歇返回 null，不能当成 EOF。 */
+    private int consecutiveNulls = 0;
     /** 主时钟：声卡已播出的媒体位置（毫秒）。 */
     private volatile long positionMs = 0L;
     /** 结束（排空完成）时的最终位置。 */
@@ -377,12 +381,35 @@ public class AudioPlayer {
 
             int sampleRate = grabber.getSampleRate() > 0 ? grabber.getSampleRate() : 48000;
             AudioFormat format = new AudioFormat(sampleRate, 16, 2, true, false);
-            line = AudioSystem.getSourceDataLine(format);
             // 声卡缓冲约 5 秒：给"帧槽解码缓冲"之外的网络抖动留出厚垫（分片慢/重试期间
             // 音频继续出声不中断）。位置计算扣掉滞留缓冲，不引入额外延迟误差；
             // 代价是开播约多等 5 秒（类似浏览器先缓冲再播）
             int outputBufferSize = Math.max(16384, sampleRate * format.getFrameSize() * 5);
-            line.open(format, outputBufferSize);
+            // 切换视频时上一路的声卡可能还没释放：打开失败就重试几秒，否则新一路会
+            // 整段无声（用户反馈：透明/不透明来回切后，重播不透明视频第一遍没声音）
+            SourceDataLine opened = null;
+            for (int attempt = 1; attempt <= 12 && running.get(); attempt++) {
+                SourceDataLine l = null;
+                try {
+                    l = AudioSystem.getSourceDataLine(format);
+                    l.open(format, outputBufferSize);
+                    opened = l;
+                    break;
+                } catch (Exception e) {
+                    if (l != null) {
+                        try { l.close(); } catch (Exception ignored) {}
+                    }
+                    if (attempt == 1 || attempt % 4 == 0) {
+                        LOGGER.warn("[CinemaForYou] 打开音频输出失败（第 {} 次: {}），250ms 后重试",
+                                attempt, e.toString());
+                    }
+                    try { Thread.sleep(250); } catch (InterruptedException ie) { return; }
+                }
+            }
+            if (opened == null) {
+                throw new IllegalStateException("音频输出设备不可用（重试 3s 仍失败）");
+            }
+            line = opened;
             this.sampleRate = sampleRate;
             bytesPerMs = Math.max(1, sampleRate * format.getFrameSize() / 1000);
             line.start();
@@ -444,12 +471,29 @@ public class AudioPlayer {
 
                 Frame frame = grabber.grabSamples();
                 if (frame == null) {
-                    // 音频流 EOF：进入排空阶段
+                    // 空帧不等同于 EOF：WebM/Opus 这类交错容器里音频包之间有间隔，
+                    // grabSamples 会间歇返回 null。只有"没有音频流 / 已播到接近时长 /
+                    // 连续 400 次都空"才判定结束——原来一次空就结束，导致 15s 的透明
+                    // WebM 音频在 0.5s 处假结束，主时钟停住、画面变成几秒一帧。
+                    consecutiveNulls++;
+                    if (durationMs <= 0) {
+                        durationMs = Math.max(0L, grabber.getLengthInTime() / 1000L);
+                    }
+                    boolean noAudioStream = !grabber.hasAudio();
+                    // 位置比时长小一截也算到结尾：positionMs 是"声卡已播出"位置，
+                    // 末尾约一个声卡缓冲（本次日志 1058ms）还没播出来，不能等它追平
+                    boolean reachedEnd = durationMs > 0 && positionMs >= durationMs - 2500L;
+                    if (!noAudioStream && !reachedEnd && consecutiveNulls < 100) {
+                        Thread.sleep(5);
+                        continue;
+                    }
                     eof = true;
                     drainDeadlineMs = System.currentTimeMillis() + DRAIN_TIMEOUT_MS;
-                    LOGGER.info("[CinemaForYou] 音频流到结尾，排空声卡缓冲: pos≈{}ms", positionMs);
+                    LOGGER.info("[CinemaForYou] 音频流到结尾（无音频流={}, 连续空帧={}, pos≈{}ms/时长 {}ms），排空声卡缓冲",
+                            noAudioStream, consecutiveNulls, positionMs, durationMs);
                     continue;
                 }
+                consecutiveNulls = 0;
                 if (frame.samples == null || frame.samples.length == 0) {
                     continue;
                 }
@@ -458,6 +502,9 @@ public class AudioPlayer {
                         Math.max(1, grabber.getAudioChannels()), leftGain, rightGain);
                 if (pcm.length > 0 && line != null) {
                     appendPending(pcm);
+                    if (!liveAudio) {
+                        LOGGER.info("[CinemaForYou] 音频首次出声: pos≈{}ms", positionMs);
+                    }
                     liveAudio = true;
                 }
                 updatePosition();
@@ -466,6 +513,9 @@ public class AudioPlayer {
         } catch (Exception e) {
             LOGGER.warn("[CinemaForYou] 音频播放失败: {}", e.toString());
         } finally {
+            // 关键：结束时必须清掉 liveAudio，否则视频侧 updateMasterClock 会继续把
+            // 这个已经停住的音频位置当主时钟，画面被拖成几秒一帧（透明 WebM 卡顿根因）。
+            liveAudio = false;
             finished = true;
             closeLine();
             if (grabber != null) {

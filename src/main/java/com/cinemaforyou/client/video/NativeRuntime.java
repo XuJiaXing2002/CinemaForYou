@@ -128,6 +128,17 @@ public final class NativeRuntime {
                 ready = true;
                 lastFailure = null;
             }
+            // 预热 libvpx 软解码器：首次 avcodec_open2 需要分配 vpx_codec_ctx 及
+            // 初始化查找表，耗时可达数百毫秒到 1~2 秒。若在用户首次播放透明 WebM
+            // 时才触发，会表现为"无画面、无声音、进度条走"。此处主动查找解码器
+            // 触发 FFmpeg 侧的 lazy 初始化，首次播放即可直接出帧。
+            try {
+                org.bytedeco.ffmpeg.global.avcodec.avcodec_find_decoder_by_name("libvpx-vp9");
+                org.bytedeco.ffmpeg.global.avcodec.avcodec_find_decoder_by_name("libvpx");
+                LOGGER.info("[CinemaForYou] libvpx 解码器预热完成");
+            } catch (Throwable t) {
+                LOGGER.warn("[CinemaForYou] libvpx 预热失败（不影响播放，首次播放可能稍慢）", t);
+            }
             LOGGER.info("[CinemaForYou] 解码原生库就绪: {} / {}", ffDir, jcDir);
         } catch (Throwable t) {
             fail("解码组件准备异常: " + t);
