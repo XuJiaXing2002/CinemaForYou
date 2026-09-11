@@ -69,13 +69,18 @@ public class VideoLibraryScreen extends Screen {
     protected void rebuildWidgets() {
         clearWidgets();
         int cx = this.width / 2;
+        // 权限：控制页入口且非本人屏幕（且非 OP）时，仅可播放（服务端自动走播放申请），
+        // 「＋队列」会改动对方屏幕状态 → 置灰
+        boolean canManageQueue = screenId == null || ScreenControlScreen.canManageScreen(screenId);
 
         // 顶部标题：统一为黄色文字标题（原灰色不可点击按钮框已替换，行位/行高不变）；
         // 整体上移贴顶（原 y=24 → 2），下方搜索框/列表随之上移，行距不变
         addRenderableWidget(new GuiTextLabel(cx, 2, 310, 12,
                 screenId == null
                         ? "📂 本地视频库 → 向所有屏幕发送播放申请"
-                        : "📂 本地视频库 → 播放到屏幕",
+                        : (canManageQueue
+                                ? "📂 本地视频库 → 播放到屏幕"
+                                : "📂 本地视频库 → 播放到屏幕（非本人屏幕：仅可播放，＋队列已置灰）"),
                 GuiTextLabel.Align.CENTER, GuiTextLabel.YELLOW));
 
         // 搜索框
@@ -147,10 +152,12 @@ public class VideoLibraryScreen extends Screen {
                         url.equals(pendingPlayUrl)
                                 ? "§c⚠ 再点一次: 向所有屏幕发送播放申请 ▶ " + fullName
                                 : "§a▶ " + fullName));
-                addRenderableWidget(Button.builder(
+                Button addQueueBtn = Button.builder(
                         Component.literal("＋队列"),
                         btn -> addToQueue(url)
-                ).bounds(cx + 45, y, 50, 20).build());
+                ).bounds(cx + 45, y, 50, 20).build();
+                addQueueBtn.active = canManageQueue;   // 非本人屏幕且非 OP：不可改动该屏队列
+                addRenderableWidget(addQueueBtn);
                 addRenderableWidget(Button.builder(
                         Component.literal(f.getName().equals(pendingDelete)
                                 ? "§c⚠确认?" : "✕删除"),

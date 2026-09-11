@@ -136,7 +136,9 @@ public class ServerMediaScreen extends Screen {
                 ? titleForDetail(files)
                 : (screenId == null
                         ? "§e🖥 服务器媒体库 → 向所有屏幕发送播放申请"
-                        : "§e🖥 服务器媒体库（服务器 cinema/videos 目录）");
+                        : (canManageQueue()
+                                ? "§e🖥 服务器媒体库（服务器 cinema/videos 目录）"
+                                : "§e🖥 服务器媒体库 · 非本人屏幕：仅可播放，＋队列已置灰"));
         // 标题贴屏幕顶部（原 y=10 → 2），下方头部/列表随之上移，行距不变
         addRenderableWidget(new GuiTextLabel(cx, 2, w, 12, titleText,
                 GuiTextLabel.Align.CENTER, GuiTextLabel.YELLOW));
@@ -274,7 +276,13 @@ public class ServerMediaScreen extends Screen {
             }
         }
         String who = detailOwner.isEmpty() ? "服务器文件" : detailOwner;
-        return "§e🖥 服务器媒体库 · " + who + "（视频 " + count + " 个）";
+        return "§e🖥 服务器媒体库 · " + who + "（视频 " + count + " 个）"
+                + (canManageQueue() ? "" : " · 非本人屏幕：仅可播放");
+    }
+
+    /** 该屏队列是否可改动：控制页入口且非本人屏幕（且非 OP≥2）时为 false（＋队列置灰）。 */
+    private boolean canManageQueue() {
+        return screenId == null || ScreenControlScreen.canManageScreen(screenId);
     }
 
     /** 明细页列表：该添加者的文件，条目渲染/按钮逻辑与原服务器媒体库一致。返回最大页数。 */
@@ -340,7 +348,7 @@ public class ServerMediaScreen extends Screen {
                     : "§a▶ " + name + (timeText != null
                             ? "  §7" + timeText : "  §7(创建时间加载中…)");
             addRenderableWidget(new MarqueeText(left, y, playW, 20, playBtn, shown));
-            addRenderableWidget(Button.builder(Component.literal("＋队列"),
+            Button addQueueBtn = Button.builder(Component.literal("＋队列"),
                     btn -> {
                         // 总设置入口加入全局播放队列（不自动连播）；控制页入口只加入该屏
                         if (screenId == null) {
@@ -349,7 +357,9 @@ public class ServerMediaScreen extends Screen {
                             ClientNetworkHandlers.sendQueueAdd(screenId, url);
                         }
                     }
-            ).bounds(left + playW + 4, y, 54, 20).build());
+            ).bounds(left + playW + 4, y, 54, 20).build();
+            addQueueBtn.active = canManageQueue();   // 非本人屏幕且非 OP：不可改动该屏队列（播放不受限）
+            addRenderableWidget(addQueueBtn);
             addRenderableWidget(Button.builder(
                     Component.literal(name.equals(pendingDelete) ? "§c⚠确认?" : "✕删除"),
                     btn -> {

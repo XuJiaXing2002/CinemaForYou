@@ -349,7 +349,8 @@ public final class NetworkHandlers {
                     });
                 });
 
-        // ScreenQueueActionPayload：队列增/删/清空/上移下移/从队列播放（服务端校验权限）
+        // ScreenQueueActionPayload：队列增/删/清空/上移下移/从队列播放（服务端校验权限；
+        // 其中"从队列播放"为非 owner 时转播放申请，见 ScreenManager.queuePlay）
         ServerPlayNetworking.registerGlobalReceiver(ScreenQueueActionPayload.TYPE,
                 (payload, context) -> {
                     ServerPlayer player = context.player();
@@ -468,20 +469,25 @@ public final class NetworkHandlers {
             mgr.playAll(payload.sourceUrl(), player);
             return;
         }
-        // 权限校验：屏幕 owner 或 op2(GAMEMASTERS) 可控制
+        // 权限判定拆分为两类：
+        //  - 播放类（PLAY）：只有该屏 owner 直接播放；非 owner（含 OP/管理员）不直接播放，
+        //    一律向该屏 owner 发播放申请（ScreenManager.play 内部对非 owner 再做兜底，
+        //    覆盖 /cinema play 命令、转封装完成回调等其它单屏播放入口）；
+        //  - 控制类（暂停/恢复/停止/跳转/失败上报）：沿用"owner 或 OP≥2"校验，语义不变。
         CinemaScreen screen = mgr.get(id);
-        if (screen != null && !canControl(screen, player)) {
-            // 播放类改为申请制：对没有控制权的屏幕发起播放不再直接拒绝，
-            // 而是向该屏 owner 发送同款播放申请（owner 接受后才播放）
-            if (payload.action() == ScreenActionPayload.Action.PLAY) {
+        if (screen != null) {
+            if (payload.action() == ScreenActionPayload.Action.PLAY
+                    && !ScreenManager.isOwner(screen, player)) {
                 mgr.requestPlayOnScreen(id, payload.sourceUrl(), -1, player);
                 return;
             }
-            // 失败上报无权限时静默忽略，避免骚扰非 owner 观看者
-            if (payload.action() == ScreenActionPayload.Action.REPORT_ERROR) return;
-            player.sendSystemMessage(Component.literal(
-                    "§c[CinemaForYou] 你没有控制此屏幕的权限（仅 owner 或管理员）"));
-            return;
+            if (!canControl(screen, player)) {
+                // 失败上报无权限时静默忽略，避免骚扰非 owner 观看者
+                if (payload.action() == ScreenActionPayload.Action.REPORT_ERROR) return;
+                player.sendSystemMessage(Component.literal(
+                        "§c[CinemaForYou] 你没有控制此屏幕的权限（仅 owner 或管理员）"));
+                return;
+            }
         }
 
         switch (payload.action()) {
@@ -544,7 +550,11 @@ public final class NetworkHandlers {
         return new PlayLogPayload(out);
     }
 
-    /** 判断玩家是否有权控制某屏幕：owner 或 op 等级 ≥ 2（实现见 ScreenManager，与队列操作同一套校验）。 */
+    /**
+     * 判断玩家是否有权控制某屏幕：owner 或 op 等级 ≥ 2（实现见 ScreenManager）。
+     *
+     * <p>仅用于控制/管理类操作；播放类操作按 owner 判定（见 {@link #handleAction}）。
+     */
     private static boolean canControl(CinemaScreen screen, ServerPlayer player) {
         return ScreenManager.canControl(screen, player);
     }

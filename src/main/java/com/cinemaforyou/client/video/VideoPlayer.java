@@ -98,6 +98,11 @@ public class VideoPlayer {
     private volatile CinemaScreen screen;
     private final String sourceUrl;
     private volatile long durationMs = 0L;
+    /**
+     * 当前内容是否来自播放申请授权（服务端屏幕状态同步）：
+     * true 时播完不自动循环/不自动连播——一次"接受"只授权一次播放。
+     */
+    private volatile boolean fromRequest = false;
 
     private FFmpegFrameGrabber grabber; // 注意：解码线程写、主线程可能在 release() 读，见 release()
     private volatile AudioPlayer audioPlayer;
@@ -216,6 +221,14 @@ public class VideoPlayer {
 
     public String getSourceUrl() {
         return sourceUrl;
+    }
+
+    /**
+     * 标记当前内容是否来自播放申请授权（服务端屏幕状态同步，见
+     * {@code ScreenStatePayload#fromRequest}）。
+     */
+    public void setFromRequest(boolean value) {
+        this.fromRequest = value;
     }
 
     /** 是否本地源（非 http/https）：本地文件音频启动不该有几秒延迟，
@@ -1585,6 +1598,10 @@ public class VideoPlayer {
     /**
      * 视频播完后的动作（仅该屏所有者客户端执行一次）：
      * 0=停止；1=循环本片；2=按队列自动播放下一个；3=播完暂停（保留末帧）。
+     *
+     * <p>例外：内容来自播放申请授权（{@link #fromRequest}）时不执行上述任何模式，
+     * 一律发 STOP——一次"接受"只授权一次播放，要继续播放必须由申请者重新发申请
+     * （服务端对续播请求还会做兜底拒绝，见 ScreenManager#playInternal）。
      */
     private void handleEndOfVideo() {
         endReported = true;
@@ -1599,6 +1616,14 @@ public class VideoPlayer {
         if (sc == null || player == null) return;
         if (!sc.ownerId().equals(player.getUUID().toString())) {
             return; // 非所有者不做自动操作；若所有者循环播放，服务端会重新广播 PLAYING
+        }
+        // 申请授权内容：不循环、不自动连播，直接停止（屏幕回到停止态，画面清空）。
+        // 与既有模式 0"播完停止"语义一致；要继续播放须由申请者重新发播放申请。
+        if (fromRequest) {
+            LOGGER.info("[CinemaForYou] 屏幕 {} 申请授权内容播完（一次接受只授权一次播放），停止不续播",
+                    screenId);
+            ClientNetworkHandlers.sendAction(ScreenActionPayload.stop(screenId));
+            return;
         }
         var cfg = com.cinemaforyou.CinemaForYouClient.clientConfig;
         if (cfg == null) {

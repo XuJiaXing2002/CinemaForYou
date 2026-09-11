@@ -19,15 +19,16 @@ import java.util.UUID;
  * <p>支持的 action：
  * <ul>
  *   <li>{@link Action#PLAY} - 用 {@code sourceUrl} 携带视频地址（作用于该屏）；
- *       对没有控制权的屏幕发起播放时服务端不直接拒绝，而是向该屏 owner 发送
- *       与 {@link Action#PLAY_ALL} 同款的播放申请（owner 接受后才播放）；</li>
+ *       只有该屏 owner 直接播放；其它玩家（含 OP/管理员）不直接播放，
+ *       而是向该屏 owner 发送与 {@link Action#PLAY_ALL} 同款的播放申请（owner 接受后才播放）；</li>
  *   <li>{@link Action#PLAY_ALL} - 广播播放（总设置入口）：不直接播放，而是由服务端向每个屏幕的
  *       owner 发送"播放申请"（聊天栏可点击接受/拒绝，60 秒超时），接受后才在该屏播放
  *       （id 不使用；任何屏幕忙碌都不影响下发）；</li>
  *   <li>{@link Action#PAUSE}</li>
  *   <li>{@link Action#RESUME}</li>
  *   <li>{@link Action#STOP}</li>
- *   <li>{@link Action#SEEK} - {@code param} 为目标毫秒位置</li>
+ *   <li>{@link Action#SEEK} - {@code param} 为目标毫秒位置（PAUSE/RESUME/STOP/SEEK 为控制类操作，
+ *       仍按"owner 或 OP≥2"校验）</li>
  * </ul>
  */
 public record ScreenActionPayload(

@@ -189,10 +189,17 @@ public class HistoryScreen extends ScrollableSettingsScreen {
         finishContent(this.height - 6);
     }
 
+    /** 该屏队列是否可改动：控制页入口且非本人屏幕（且非 OP≥2）时为 false（＋队列置灰）。 */
+    private boolean canManageQueue() {
+        return screenId == null || ScreenControlScreen.canManageScreen(screenId);
+    }
+
     /** 标题文案：该屏 / 玩家明细 / 玩家分组主页（仅展示，行为不变）。 */
     private String headerText() {
         if (screenId != null) {
-            return "§e播放历史（服务器，显示谁在何时播放）";
+            return canManageQueue()
+                    ? "§e播放历史（服务器，显示谁在何时播放）"
+                    : "§e播放历史（服务器）· 非本人屏幕：仅可播放，＋队列已置灰";
         }
         if (playerKey != null) {
             return "§e播放历史：" + playerLabel + " → 向所有屏幕发送播放申请";
@@ -284,9 +291,11 @@ public class HistoryScreen extends ScrollableSettingsScreen {
         addRenderableWidget(headBtn);
         addRenderableWidget(new MarqueeText(left, ry(y), headW, 20, headBtn, headText));
         int x = left + w - actionW;
-        addRenderableWidget(Button.builder(Component.literal("＋队列"),
+        Button addQueueBtn = Button.builder(Component.literal("＋队列"),
                 btn -> addToQueue(e.url())
-        ).bounds(x, ry(y), qw, 20).build());
+        ).bounds(x, ry(y), qw, 20).build();
+        addQueueBtn.active = canManageQueue();   // 非本人屏幕且非 OP：不可改动该屏队列（播放不受限）
+        addRenderableWidget(addQueueBtn);
         // 备注：给该视频链接起任意名字，显示时优先于标题/链接
         addRenderableWidget(Button.builder(Component.literal("✎备注"),
                 btn -> {

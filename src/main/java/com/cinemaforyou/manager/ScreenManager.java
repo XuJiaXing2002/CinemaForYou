@@ -69,6 +69,14 @@ public class ScreenManager {
     private final List<QueueEntry> globalQueue = new ArrayList<>();
     /** 待处理的播放申请（requestId → 申请分项）；接受/拒绝/超时后移除，requestId 唯一防串号。 */
     private final Map<UUID, PlayRequestItem> pendingPlayRequests = new HashMap<>();
+    /**
+     * 申请授权播放标记：屏幕 → 被 owner 接受的播放内容（授权 URL + 原申请者）。
+     *
+     * <p>一次"接受"只授权一次播放：该内容播完后 owner 端不得自动循环/自动连播，
+     * 要继续播放必须重新发申请。写入 = {@link #respondPlayRequest} 接受时；
+     * 清除 = owner 直接发起播放（非申请授权）、续播被兜底拒绝、停止播放、屏幕删除时。
+     */
+    private final Map<UUID, RequestedPlay> requestedContent = new HashMap<>();
 
     /** 一条播放记录。 */
     public static final class LogEntry {
@@ -89,6 +97,12 @@ public class ScreenManager {
 
     /** 播放申请状态（PENDING 才可接受/拒绝）。 */
     private enum PlayRequestStatus { PENDING, ACCEPTED, DENIED, OFFLINE, EXPIRED }
+
+    /** 一条"申请授权播放"记录（授权生效时的实际下发 URL + 原申请者）。 */
+    private record RequestedPlay(String url, UUID initiatorId, String initiatorName) {}
+
+    /** 播放授权来源（发起申请并被 owner 接受的原申请者）；null = owner 自己直接播放。 */
+    record PlayAuth(UUID initiatorId, String initiatorName) {}
 
     /** 一次全局播放申请批次（发起者 + 视频 + 各屏申请分项）。 */
     private static final class PlayRequestBatch {
@@ -338,6 +352,7 @@ public class ScreenManager {
                 runtime.remove(id);
                 screenDescs.remove(id);
                 queues.remove(id);
+                requestedContent.remove(id);
                 removed++;
             }
         }
@@ -417,6 +432,7 @@ public class ScreenManager {
         runtime.remove(id);
         screenDescs.remove(id);
         queues.remove(id);
+        requestedContent.remove(id);
         save();
         NetworkHandlers.broadcastSync(allScreens());
         broadcastQueues();
@@ -426,11 +442,60 @@ public class ScreenManager {
 
     // ───────────── 播放控制 ─────────────
 
+    /**
+     * 直接播放（仅 owner 路径）：owner 自己的播放、以及 {@link #requestPlayOnScreen} 接受后的播放都汇聚到这里。
+     *
+     * <p>播放类权限统一闸口（覆盖 GUI 动作包、{@code /cinema play} 命令、转封装完成回调等
+     * 全部单屏播放入口）：非该屏 owner（包括 OP/管理员）不直接播放，
+     * 一律改为向 owner 发送播放申请（{@link #requestPlayOnScreen}）。
+     */
     public void play(UUID id, String url, ServerPlayer requester) {
+        playInternal(id, url, requester, null);
+    }
+
+    /**
+     * 接受播放申请后的播放（申请授权内容）：标记该内容为"申请授权"并随屏幕状态同步给
+     * owner 客户端，播完不自动循环/连播（一次接受只授权一次播放）。
+     *
+     * <p>同包 {@link MediaRemuxer} 的转封装延迟播放也走此入口，保持授权语义；
+     * {@code initiatorId} = 原申请者（用于续播被兜底拒绝时回执）。
+     */
+    void playFromRequest(UUID id, String url, ServerPlayer requester,
+                         UUID initiatorId, String initiatorName) {
+        playInternal(id, url, requester,
+                initiatorId == null ? null : new PlayAuth(initiatorId, initiatorName));
+    }
+
+    /**
+     * 播放核心实现（owner 直连播放与接受申请后的播放共用）。
+     *
+     * @param auth 播放授权来源（非 null = 本次播放来自被接受的播放申请）；null = owner 直接播放
+     */
+    private void playInternal(UUID id, String url, ServerPlayer requester, PlayAuth auth) {
         CinemaScreen s = screens.get(id);
         if (s == null) { notFound(requester, id); return; }
-        String effective = preparePlayUrl(url, List.of(id), requester);
+        // 非 owner（含 OP）：不直接播放，走播放申请；申请被接受后由 owner 再次进入本方法
+        if (!isOwner(s, requester)) {
+            requestPlayOnScreen(id, url, -1, requester);
+            return;
+        }
+        // 服务端兜底：申请授权内容播完后 owner 端仍发起了续播（循环/自动连播同一内容）→
+        // 拒绝本次播放（不下发）并清除授权标记，避免"一次接受"被无限续播
+        RequestedPlay authorized = requestedContent.get(id);
+        if (auth == null && authorized != null && url.equals(authorized.url())) {
+            requestedContent.remove(id);
+            notifyRequestEnded(authorized);
+            LOGGER.debug("[CinemaForYou] 已拒绝申请授权内容的续播: 屏幕={} 视频={}",
+                    id, shortUrl(url));
+            return;
+        }
+        String effective = preparePlayUrl(url, List.of(id), requester, auth);
         if (effective == null) return;   // 被拒绝或延后转封装
+        if (auth == null) {
+            requestedContent.remove(id);   // owner 自己直接播放：清除旧的申请授权标记
+        } else {
+            requestedContent.put(id, new RequestedPlay(effective, auth.initiatorId(), auth.initiatorName()));
+        }
         boolean served = !effective.equals(url);
         applyPlay(id, effective);
         requester.sendSystemMessage(buildPlayMessage("§a▶ 播放: ", served ? effective : url));
@@ -496,12 +561,12 @@ public class ScreenManager {
     }
 
     /**
-     * 单屏播放申请：任何玩家对"自己没有控制权"的屏幕发起播放时，不再直接拒绝，
-     * 而是向该屏 owner 发送一条与 {@link #playAll} 完全同款的播放申请
+     * 单屏播放申请：任何非 owner 玩家（包括 OP/管理员）对不是自己拥有的屏幕发起播放时，
+     * 不直接播放，而是向该屏 owner 发送一条与 {@link #playAll} 完全同款的播放申请
      * （同样的 3 行聊天消息、{@link #PLAY_REQUEST_TIMEOUT_MS} 有效期、requestId 唯一防串号，
      * 并进入现有 {@link #pendingPlayRequests} 与超时/汇总回执逻辑）；owner 接受后才真正播放。
      *
-     * <p>权限：owner 播自己的屏、OP（等级 ≥2）播任意屏不走此入口（调用方已判定无控制权）。
+     * <p>权限：owner 播放自己的屏幕直接播放，不走此入口；其余玩家（含 OP/管理员）一律走此入口。
      *
      * @param queueIndex 队列条目播放申请对应的队列下标（-1 = 普通播放）；
      *                   接受后按该条目播放，条目不删除，"自动播放下一个"语义不变
@@ -600,7 +665,9 @@ public class ScreenManager {
                     playUrl = live.get(item.queueIndex).url();
                 }
             }
-            play(item.screenId, playUrl, responder);
+            // 走授权播放入口：该内容记为"申请授权"，播完不自动循环/连播
+            playFromRequest(item.screenId, playUrl, responder,
+                    item.batch.initiatorId, item.batch.initiatorName);
             responder.sendSystemMessage(Component.literal(
                     "§a[CinemaForYou] 已接受播放申请，屏幕「" + item.screenName + "」开始播放"));
             notifyInitiator(item, "§a[CinemaForYou] 屏幕「" + item.screenName + "」的 owner「"
@@ -627,6 +694,19 @@ public class ScreenManager {
         ServerPlayer initiator = server.getPlayerList().getPlayer(item.batch.initiatorId);
         if (initiator != null) {
             initiator.sendSystemMessage(Component.literal(message));
+        }
+    }
+
+    /**
+     * 申请授权内容播完后 owner 端又发起续播被兜底拒绝时，给原申请者一条提示
+     * （不在线则跳过）：告知这次授权播放已结束，想继续要重新发申请。
+     */
+    private void notifyRequestEnded(RequestedPlay authorized) {
+        if (authorized.initiatorId() == null) return;
+        ServerPlayer initiator = server.getPlayerList().getPlayer(authorized.initiatorId());
+        if (initiator != null) {
+            initiator.sendSystemMessage(Component.literal(
+                    "§7[CinemaForYou] 你申请的播放已结束，如需继续请重新发送播放申请"));
         }
     }
 
@@ -697,7 +777,8 @@ public class ScreenManager {
     /**
      * 播放入口的 URL 校验（本地文件开关 + 域名白名单）；失败时提示并返回 false。
      *
-     * <p>播放入口（{@link #play}、{@link #playAll} 发申请前）共用，保持服务端权威。
+     * <p>播放入口（{@link #play}、{@link #requestPlayOnScreen} 发申请前、{@link #playAll}）共用，
+     * 保持服务端权威。
      */
     private static boolean checkPlayUrl(String url, ServerPlayer requester) {
         ServerConfig cfg = CinemaForYou.serverConfig;
@@ -721,9 +802,11 @@ public class ScreenManager {
      * 服务端大文件自动转封装延迟、本地文件改写成服务端媒体地址。
      *
      * @param screenIds 本次播放涉及的屏幕（转封装完成后逐屏自动开播；PLAY_ALL 传全体）
+     * @param auth      播放授权来源（非 null = 申请授权播放；转封装完成后保持授权语义），可为 null
      * @return 实际应下发的 URL；被拒绝或已延后转封装时返回 null
      */
-    private String preparePlayUrl(String url, List<UUID> screenIds, ServerPlayer requester) {
+    private String preparePlayUrl(String url, List<UUID> screenIds, ServerPlayer requester,
+                                  PlayAuth auth) {
         // 配置校验：本地文件与域名白名单
         if (!checkPlayUrl(url, requester)) return null;
         // 服务端媒体大文件自动转封装：命中需优化的容器时先排队转封装，
@@ -731,7 +814,7 @@ public class ScreenManager {
         if (url.startsWith("file:")) {
             // 媒体库相对路径（可为"玩家名/视频.mp4"子目录路径）；非媒体库引用退回文件名
             String fileName = com.cinemaforyou.manager.MediaHttpServer.mediaLibraryNameFor(url);
-            if (fileName != null && MediaRemuxer.maybeDeferPlay(screenIds, requester, fileName)) {
+            if (fileName != null && MediaRemuxer.maybeDeferPlay(screenIds, requester, fileName, auth)) {
                 return null;
             }
         }
@@ -871,12 +954,19 @@ public class ScreenManager {
                 new Permission.HasCommandLevel(PermissionLevel.GAMEMASTERS));
     }
 
-    /** 判断玩家是否有权控制某屏幕：owner 或 op 等级 ≥2（与网络层校验一致）。 */
+    /** 是否该屏幕的 owner（owner 字段与玩家 UUID 一致）。播放类操作的唯一直接放行条件。 */
+    public static boolean isOwner(CinemaScreen screen, ServerPlayer player) {
+        return screen.ownerId().equals(player.getUUID().toString());
+    }
+
+    /**
+     * 判断玩家是否有权控制某屏幕：owner 或 op 等级 ≥2（与网络层校验一致）。
+     *
+     * <p>仅用于控制/管理类操作（设置、移动、拉缩、曲率、改名、描述、删除、队列增删改等）；
+     * 播放类操作不走此闸口，统一按 {@link #isOwner} 判定（非 owner 一律发播放申请）。
+     */
     public static boolean canControl(CinemaScreen screen, ServerPlayer player) {
-        if (screen.ownerId().equals(player.getUUID().toString())) {
-            return true;
-        }
-        return isOp(player);
+        return isOwner(screen, player) || isOp(player);
     }
 
     /** 无权限统一提示。 */
@@ -1052,15 +1142,15 @@ public class ScreenManager {
     /**
      * 从队列立即播放第 index 项（条目保留在队列中，供"循环/自动下一个"继续使用）。
      *
-     * <p>权限：owner/OP 直接播放；其它玩家不直接拒绝，改为向该屏 owner 发送同款播放申请
-     * （接受后按该队列条目语义播放，条目不删除）。
+     * <p>权限：owner 直接播放；其余玩家（含 OP/管理员）不直接播放，
+     * 改为向该屏 owner 发送同款播放申请（接受后按该队列条目语义播放，条目不删除）。
      */
     public void queuePlay(UUID id, int index, ServerPlayer requester) {
         CinemaScreen s = screens.get(id);
         if (s == null) { notFound(requester, id); return; }
         List<QueueEntry> q = queues.get(id);
         if (q == null || index < 0 || index >= q.size()) return;
-        if (!canControl(s, requester)) {
+        if (!isOwner(s, requester)) {
             requestPlayOnScreen(id, q.get(index).url(), index, requester);
             return;
         }
@@ -1146,6 +1236,8 @@ public class ScreenManager {
         rt.sourceUrl = "";
         rt.positionMs = 0;
         rt.dirty = true;
+        // 播放停止：本次"申请授权"生命周期结束（授权内容播完由 owner 客户端发 STOP 到此）
+        requestedContent.remove(id);
         broadcastState(id);
         requester.sendSystemMessage(Component.literal("§e⏹ 停止"));
     }
@@ -1355,7 +1447,8 @@ public class ScreenManager {
         RuntimeState rt = runtime.get(id);
         if (rt == null) return;
         ScreenStatePayload payload = new ScreenStatePayload(
-                id, rt.state, rt.positionMs, rt.sourceUrl, System.currentTimeMillis());
+                id, rt.state, rt.positionMs, rt.sourceUrl, System.currentTimeMillis(),
+                requestedContent.containsKey(id));
         NetworkHandlers.broadcastState(payload);
     }
 
@@ -1365,7 +1458,8 @@ public class ScreenManager {
             RuntimeState rt = e.getValue();
             if (rt.state == ScreenState.IDLE && rt.sourceUrl.isEmpty()) continue;
             ScreenStatePayload payload = new ScreenStatePayload(
-                    e.getKey(), rt.state, rt.positionMs, rt.sourceUrl, System.currentTimeMillis());
+                    e.getKey(), rt.state, rt.positionMs, rt.sourceUrl, System.currentTimeMillis(),
+                    requestedContent.containsKey(e.getKey()));
             if (sender != null) {
                 sender.sendPacket(payload);
             }

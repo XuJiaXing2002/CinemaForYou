@@ -60,6 +60,14 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 
+/**
+ * 屏幕控制页：播放类入口（输入链接/本地视频/播放历史/服务器媒体库/播放队列）
+ * + 设置/移动屏幕/屏边拉缩/曲率/声音等控制类入口 + 底部「当前屏幕选择」「关闭」。
+ *
+ * <p>权限（与服务端 {@code ScreenManager.canControl} 一致）：当前屏幕的 owner 或 OP≥2 全部可用；
+ * 普通玩家在别人的屏幕上仅播放类可用（发起播放由服务端自动走播放申请，客户端不处理），
+ * 其余（设置/移动/拉缩/曲率、停止与进度跳转、队列增删改等）一律置灰并显示灰字提示。
+ */
 public class ScreenControlScreen
 extends ScrollableSettingsScreen {
     private static final int[] RESOLUTIONS = new int[]{360, 480, 720, 1080, 1440, 2160};
@@ -140,13 +148,32 @@ extends ScrollableSettingsScreen {
             return;
         }
         ScreenState state = this.currentState();
+        // 权限：owner 或 OP≥2 可管理（设置/移动/拉缩/曲率/队列改动…）；
+        // 普通玩家在别人的屏幕上只能用播放类入口、发起播放与查看队列，其余置灰并给出灰字提示。
+        boolean canManage = canManageScreen(screen);
+        if (!canManage) {
+            this.addRenderableWidget(new GuiTextLabel(cx, this.ry(y), w, 12,
+                    "非本人屏幕不可操作：仅可播放/查看（设置、移动、拉缩、队列改动需 owner 或 OP≥2）",
+                    GuiTextLabel.Align.CENTER, GuiTextLabel.GRAY_LIGHT));
+            y += 14;
+        }
         String playPauseLabel = state == ScreenState.PLAYING ? "\u6682\u505c" : "\u64ad\u653e";
         int rowX = cx - 147;
         int[] x4 = new int[]{rowX, rowX + 74, rowX + 148, rowX + 222};
         int bw = 72;
-        this.addRenderableWidget(Button.builder(Component.literal(playPauseLabel), btn -> this.onPlayPause(screen)).bounds(x4[0], this.ry(y), bw, 20).build());
-        this.addRenderableWidget(Button.builder(Component.literal("\u505c\u6b62"), btn -> ClientNetworkHandlers.sendAction(ScreenActionPayload.stop((UUID)this.screenId))).bounds(x4[1], this.ry(y), bw, 20).build());
-        this.addRenderableWidget(Button.builder(Component.literal("\u5237\u65b0\u8bbe\u7f6e"), btn -> this.sendSettings(this.currentScreen())).bounds(x4[2], this.ry(y), bw, 20).build());
+        // 播放/暂停：空闲/停止时点击=发起播放（服务端自动走播放申请，播放类允许）；
+        // 播放中/暂停中点击=直接暂停/恢复（控制类，会改动屏幕状态，需可管理）
+        Button playPauseBtn = Button.builder(Component.literal(playPauseLabel), btn -> this.onPlayPause(screen)).bounds(x4[0], this.ry(y), bw, 20).build();
+        playPauseBtn.active = canManage || (state != ScreenState.PLAYING && state != ScreenState.PAUSED);
+        this.addRenderableWidget(playPauseBtn);
+        // 停止/刷新设置/进度跳转：控制类操作，非 owner 且非 OP 置灰（服务端同样拒绝）
+        Button stopBtn = Button.builder(Component.literal("\u505c\u6b62"), btn -> ClientNetworkHandlers.sendAction(ScreenActionPayload.stop((UUID)this.screenId))).bounds(x4[1], this.ry(y), bw, 20).build();
+        stopBtn.active = canManage;
+        this.addRenderableWidget(stopBtn);
+        Button refreshBtn = Button.builder(Component.literal("\u5237\u65b0\u8bbe\u7f6e"), btn -> this.sendSettings(this.currentScreen())).bounds(x4[2], this.ry(y), bw, 20).build();
+        refreshBtn.active = canManage;
+        this.addRenderableWidget(refreshBtn);
+        // 重播本片 = 重新发起播放（播放类，服务端自动走播放申请），保持可用
         this.addRenderableWidget(Button.builder(Component.literal("\u91cd\u64ad\u672c\u7247"), btn -> {
             CinemaScreen s = this.currentScreen();
             if (s != null && !s.sourceUrl().isEmpty()) {
@@ -155,10 +182,18 @@ extends ScrollableSettingsScreen {
                 this.hint("\u8be5\u5c4f\u8fd8\u6ca1\u6709\u7247\u6e90\uff0c\u8bf7\u5148\u7528\u4e0b\u65b9\u5165\u53e3\u9009\u62e9");
             }
         }).bounds(x4[3], this.ry(y), bw, 20).build());
-        this.addRenderableWidget(Button.builder(Component.literal("-30s"), btn -> this.seekRelative(-30000L)).bounds(x4[0], this.ry(y += rowH), bw, 20).build());
-        this.addRenderableWidget(Button.builder(Component.literal("+30s"), btn -> this.seekRelative(30000L)).bounds(x4[1], this.ry(y), bw, 20).build());
-        this.addRenderableWidget(Button.builder(Component.literal("-10s"), btn -> this.seekRelative(-10000L)).bounds(x4[2], this.ry(y), bw, 20).build());
-        this.addRenderableWidget(Button.builder(Component.literal("+10s"), btn -> this.seekRelative(10000L)).bounds(x4[3], this.ry(y), bw, 20).build());
+        Button back30 = Button.builder(Component.literal("-30s"), btn -> this.seekRelative(-30000L)).bounds(x4[0], this.ry(y += rowH), bw, 20).build();
+        back30.active = canManage;
+        this.addRenderableWidget(back30);
+        Button fwd30 = Button.builder(Component.literal("+30s"), btn -> this.seekRelative(30000L)).bounds(x4[1], this.ry(y), bw, 20).build();
+        fwd30.active = canManage;
+        this.addRenderableWidget(fwd30);
+        Button back10 = Button.builder(Component.literal("-10s"), btn -> this.seekRelative(-10000L)).bounds(x4[2], this.ry(y), bw, 20).build();
+        back10.active = canManage;
+        this.addRenderableWidget(back10);
+        Button fwd10 = Button.builder(Component.literal("+10s"), btn -> this.seekRelative(10000L)).bounds(x4[3], this.ry(y), bw, 20).build();
+        fwd10.active = canManage;
+        this.addRenderableWidget(fwd10);
         int sw = (w - 4) / 3;
         this.addRenderableWidget(Button.builder(Component.literal("\ud83d\udd17 \u8f93\u5165\u94fe\u63a5"), btn -> this.openChild(new ScreenLinkInputScreen(this.screenId))).bounds(left, this.ry(y += rowH), sw, 20).build());
         this.addRenderableWidget(Button.builder(Component.literal("\ud83d\udcc2 \u672c\u5730\u89c6\u9891"), btn -> this.openChild(new VideoLibraryScreen(this.screenId))).bounds(left + sw + 2, this.ry(y), sw, 20).build());
@@ -175,16 +210,20 @@ extends ScrollableSettingsScreen {
         this.addRenderableWidget(Button.builder(Component.literal("\ud83d\udda5 \u670d\u52a1\u5668\u5a92\u4f53\u5e93\uff08\u670d\u52a1\u5668 cinema/videos\uff09"), btn -> this.openChild(new ServerMediaScreen(this.screenId))).bounds(left, this.ry(y += rowH), w, 20).build());
         // 播放队列：屏幕控制入口只有两级（全部屏幕列表 → 该屏队列明细），不显示玩家层级
         this.addRenderableWidget(Button.builder(Component.literal("\u64ad\u653e\u961f\u5217"), btn -> this.openChild(ScreenQueueManagerScreen.forScreenList())).bounds(left, this.ry(y += rowH), w, 20).build());
-        this.addRenderableWidget(Button.builder(Component.literal("\u2699 \u58f0\u97f3\u4e0e\u64ad\u653e\u8bbe\u7f6e\u2026\uff08\u8303\u56f4/\u8870\u51cf/\u64ad\u5b8c\u884c\u4e3a\uff09"), btn -> this.openChild(new ScreenSoundSettingsScreen(this.screenId))).bounds(left, this.ry(y += rowH), w, 20).build());
+        // 声音与播放设置（范围/衰减为屏幕字段）属屏幕设置类：非 owner 且非 OP 置灰
+        Button soundBtn = Button.builder(Component.literal("\u2699 \u58f0\u97f3\u4e0e\u64ad\u653e\u8bbe\u7f6e\u2026\uff08\u8303\u56f4/\u8870\u51cf/\u64ad\u5b8c\u884c\u4e3a\uff09"), btn -> this.openChild(new ScreenSoundSettingsScreen(this.screenId))).bounds(left, this.ry(y += rowH), w, 20).build();
+        soundBtn.active = canManage;
+        this.addRenderableWidget(soundBtn);
         y += rowH + 4;
-        y = this.stepRow(cx, y, "\u4eae\u5ea6", screen.brightnessPercent() + "%", (d, s) -> s.withSettings(ScreenControlScreen.clamp(s.brightnessPercent() + d, 0, 100), s.volumePercent(), s.resolutionHeight(), s.displayScalePercent()));
-        y = this.stepRow(cx, y, "\u97f3\u91cf", screen.volumePercent() + "%", (d, s) -> s.withSettings(s.brightnessPercent(), ScreenControlScreen.clamp(s.volumePercent() + d, 0, 100), s.resolutionHeight(), s.displayScalePercent()));
-        y = this.stepRow(cx, y, "\u5927\u5c0f", screen.displayScalePercent() + "%", (d, s) -> s.withSettings(s.brightnessPercent(), s.volumePercent(), s.resolutionHeight(), ScreenControlScreen.clamp(s.displayScalePercent() + d, 25, 200)));
-        y = this.stepRow(cx, y, "\u5206\u8fa8\u7387", screen.resolutionHeight() + "p", (d, s) -> s.withSettings(s.brightnessPercent(), s.volumePercent(), ScreenControlScreen.resByIndex(s.resolutionHeight(), d), s.displayScalePercent()));
+        // 显示设置（亮度/音量/大小/分辨率）与曲率/倾斜/移动/拉缩同属屏幕修改类：置灰条件一致
+        y = this.stepRow(cx, y, "\u4eae\u5ea6", screen.brightnessPercent() + "%", (d, s) -> s.withSettings(ScreenControlScreen.clamp(s.brightnessPercent() + d, 0, 100), s.volumePercent(), s.resolutionHeight(), s.displayScalePercent()), canManage);
+        y = this.stepRow(cx, y, "\u97f3\u91cf", screen.volumePercent() + "%", (d, s) -> s.withSettings(s.brightnessPercent(), ScreenControlScreen.clamp(s.volumePercent() + d, 0, 100), s.resolutionHeight(), s.displayScalePercent()), canManage);
+        y = this.stepRow(cx, y, "\u5927\u5c0f", screen.displayScalePercent() + "%", (d, s) -> s.withSettings(s.brightnessPercent(), s.volumePercent(), s.resolutionHeight(), ScreenControlScreen.clamp(s.displayScalePercent() + d, 25, 200)), canManage);
+        y = this.stepRow(cx, y, "\u5206\u8fa8\u7387", screen.resolutionHeight() + "p", (d, s) -> s.withSettings(s.brightnessPercent(), s.volumePercent(), ScreenControlScreen.resByIndex(s.resolutionHeight(), d), s.displayScalePercent()), canManage);
         // 长条按钮「曲率类型」：上下间距统一为 22px 行距 / 2px 间隙（与其它长条按钮一致）；
         // 上方 stepRow 返回 +21，故这里 +1 补齐，下方 y += rowH 的行距不变
         int curvType = screen.curvatureType();
-        this.addRenderableWidget(Button.builder(Component.literal(("\u66f2\u7387\u7c7b\u578b: " + ScreenControlScreen.curvatureTypeLabel(curvType))), btn -> {
+        Button curvBtn = Button.builder(Component.literal(("\u66f2\u7387\u7c7b\u578b: " + ScreenControlScreen.curvatureTypeLabel(curvType))), btn -> {
             int next = (curvType + 1) % 5;
             this.updateSettings(s -> s.withCurvatureSettings(next, s.curvDegL(), s.curvDegR(), s.curvDegT(), s.curvDegB()));
             if (next > 0) {
@@ -192,36 +231,42 @@ extends ScrollableSettingsScreen {
             } else {
                 this.hint("\u5df2\u6062\u590d\u5e73\u9762\u5c4f");
             }
-        }).bounds(cx - 120, this.ry(y += 1), 240, 20).build());
+        }).bounds(cx - 120, this.ry(y += 1), 240, 20).build();
+        curvBtn.active = canManage;
+        this.addRenderableWidget(curvBtn);
         y += rowH;
-        y = this.stepRow(cx, y, "\u5de6\u5f27", screen.curvDegL() + "\u00b0", (d, s) -> s.withCurvatureSettings(s.curvatureType(), ScreenControlScreen.clamp(s.curvDegL() + d, 0, 90), s.curvDegR(), s.curvDegT(), s.curvDegB()));
-        y = this.stepRow(cx, y, "\u53f3\u5f27", screen.curvDegR() + "\u00b0", (d, s) -> s.withCurvatureSettings(s.curvatureType(), s.curvDegL(), ScreenControlScreen.clamp(s.curvDegR() + d, 0, 90), s.curvDegT(), s.curvDegB()));
+        y = this.stepRow(cx, y, "\u5de6\u5f27", screen.curvDegL() + "\u00b0", (d, s) -> s.withCurvatureSettings(s.curvatureType(), ScreenControlScreen.clamp(s.curvDegL() + d, 0, 90), s.curvDegR(), s.curvDegT(), s.curvDegB()), canManage);
+        y = this.stepRow(cx, y, "\u53f3\u5f27", screen.curvDegR() + "\u00b0", (d, s) -> s.withCurvatureSettings(s.curvatureType(), s.curvDegL(), ScreenControlScreen.clamp(s.curvDegR() + d, 0, 90), s.curvDegT(), s.curvDegB()), canManage);
         if (curvType == 3 || curvType == 4) {
-            y = this.stepRow(cx, y, "\u4e0a\u5f27", screen.curvDegT() + "\u00b0", (d, s) -> s.withCurvatureSettings(s.curvatureType(), s.curvDegL(), s.curvDegR(), ScreenControlScreen.clamp(s.curvDegT() + d, 0, 90), s.curvDegB()));
-            y = this.stepRow(cx, y, "\u4e0b\u5f27", screen.curvDegB() + "\u00b0", (d, s) -> s.withCurvatureSettings(s.curvatureType(), s.curvDegL(), s.curvDegR(), s.curvDegT(), ScreenControlScreen.clamp(s.curvDegB() + d, 0, 90)));
+            y = this.stepRow(cx, y, "\u4e0a\u5f27", screen.curvDegT() + "\u00b0", (d, s) -> s.withCurvatureSettings(s.curvatureType(), s.curvDegL(), s.curvDegR(), ScreenControlScreen.clamp(s.curvDegT() + d, 0, 90), s.curvDegB()), canManage);
+            y = this.stepRow(cx, y, "\u4e0b\u5f27", screen.curvDegB() + "\u00b0", (d, s) -> s.withCurvatureSettings(s.curvatureType(), s.curvDegL(), s.curvDegR(), s.curvDegT(), ScreenControlScreen.clamp(s.curvDegB() + d, 0, 90)), canManage);
         }
-        y = this.stepRow(cx, y, "\u5de6\u53f3\u503e\u659c", screen.tiltDegH() + "\u00b0", (d, s) -> s.withTiltSettings(ScreenControlScreen.clamp(s.tiltDegH() + d, -180, 180), s.tiltDegV()));
-        y = this.stepRow(cx, y, "\u4e0a\u4e0b\u4fef\u4ef0", screen.tiltDegV() + "\u00b0", (d, s) -> s.withTiltSettings(s.tiltDegH(), ScreenControlScreen.clamp(s.tiltDegV() + d, -180, 180)));
+        y = this.stepRow(cx, y, "\u5de6\u53f3\u503e\u659c", screen.tiltDegH() + "\u00b0", (d, s) -> s.withTiltSettings(ScreenControlScreen.clamp(s.tiltDegH() + d, -180, 180), s.tiltDegV()), canManage);
+        y = this.stepRow(cx, y, "\u4e0a\u4e0b\u4fef\u4ef0", screen.tiltDegV() + "\u00b0", (d, s) -> s.withTiltSettings(s.tiltDegH(), ScreenControlScreen.clamp(s.tiltDegV() + d, -180, 180)), canManage);
         // 分组按钮「移动屏幕」（240 宽、居中）：上下间距统一为 22px 行距 / 2px 间隙（与其它长条按钮一致）；
         // 上方 actionRow 返回 +21，故把原来的 +2 改为 +1 补齐，下方 y += 22 的行距不变
-        this.addRenderableWidget(Button.builder(Component.literal("\u79fb\u52a8\u5c4f\u5e55"), btn -> {}).bounds(cx - 120, this.ry(y += 1), 240, 20).build());
+        Button moveGroupBtn = Button.builder(Component.literal("\u79fb\u52a8\u5c4f\u5e55"), btn -> {}).bounds(cx - 120, this.ry(y += 1), 240, 20).build();
+        moveGroupBtn.active = canManage;   // 分组标题按钮：置灰表示整组不可用
+        this.addRenderableWidget(moveGroupBtn);
         y += 22;
         int[] hDir = ScreenControlScreen.horizontalDelta(screen.orientation());
         int[] vDir = ScreenControlScreen.verticalDelta(screen.orientation());
         int[] nDir = ScreenControlScreen.normalDelta(screen.orientation());
-        y = this.actionRow(cx, y, "\u00a7e\u6a2a\u79fb\u5c4f\u5e55 \u00a7f" + ScreenControlScreen.signed(this.moveValue(screen, hDir)), () -> this.moveScreenBy(hDir, -10), () -> this.moveScreenBy(hDir, -1), () -> this.moveScreenBy(hDir, 1), () -> this.moveScreenBy(hDir, 10));
-        y = this.actionRow(cx, y, "\u00a7e\u7eb5\u79fb\u5c4f\u5e55 \u00a7f" + ScreenControlScreen.signed(this.moveValue(screen, vDir)), () -> this.moveScreenBy(vDir, -10), () -> this.moveScreenBy(vDir, -1), () -> this.moveScreenBy(vDir, 1), () -> this.moveScreenBy(vDir, 10));
-        y = this.actionRow(cx, y, "\u00a7e\u524d\u540e\u79fb\u5c4f \u00a7f" + ScreenControlScreen.signed(this.moveValue(screen, nDir)), () -> this.moveScreenBy(nDir, -10), () -> this.moveScreenBy(nDir, -1), () -> this.moveScreenBy(nDir, 1), () -> this.moveScreenBy(nDir, 10));
+        y = this.actionRow(cx, y, "\u00a7e\u6a2a\u79fb\u5c4f\u5e55 \u00a7f" + ScreenControlScreen.signed(this.moveValue(screen, hDir)), () -> this.moveScreenBy(hDir, -10), () -> this.moveScreenBy(hDir, -1), () -> this.moveScreenBy(hDir, 1), () -> this.moveScreenBy(hDir, 10), canManage);
+        y = this.actionRow(cx, y, "\u00a7e\u7eb5\u79fb\u5c4f\u5e55 \u00a7f" + ScreenControlScreen.signed(this.moveValue(screen, vDir)), () -> this.moveScreenBy(vDir, -10), () -> this.moveScreenBy(vDir, -1), () -> this.moveScreenBy(vDir, 1), () -> this.moveScreenBy(vDir, 10), canManage);
+        y = this.actionRow(cx, y, "\u00a7e\u524d\u540e\u79fb\u5c4f \u00a7f" + ScreenControlScreen.signed(this.moveValue(screen, nDir)), () -> this.moveScreenBy(nDir, -10), () -> this.moveScreenBy(nDir, -1), () -> this.moveScreenBy(nDir, 1), () -> this.moveScreenBy(nDir, 10), canManage);
         // 分组按钮「屏边拉缩」（240 宽、居中）：上下间距统一为 22px 行距 / 2px 间隙（与其它长条按钮一致）；
         // 上方 actionRow 返回 +21，故把原来的 +2 改为 +1 补齐，下方 y += 22 的行距不变
-        this.addRenderableWidget(Button.builder(Component.literal("\u5c4f\u8fb9\u62c9\u7f29"), btn -> {}).bounds(cx - 120, this.ry(y += 1), 240, 20).build());
+        Button resizeGroupBtn = Button.builder(Component.literal("\u5c4f\u8fb9\u62c9\u7f29"), btn -> {}).bounds(cx - 120, this.ry(y += 1), 240, 20).build();
+        resizeGroupBtn.active = canManage;   // 分组标题按钮：置灰表示整组不可用
+        this.addRenderableWidget(resizeGroupBtn);
         y += 22;
         int[] nArray = edgeOrder = new int[]{2, 3, 0, 1};
         int n = nArray.length;
         for (int i = 0; i < n; ++i) {
             int edge;
             int e = edge = nArray[i];
-            y = this.actionRow(cx, y, "\u00a7e" + ScreenControlScreen.edgeName(e) + " \u00a7f" + ScreenControlScreen.signed(this.edgeValue(screen, e)), () -> this.resizeScreenEdge(e, -10), () -> this.resizeScreenEdge(e, -1), () -> this.resizeScreenEdge(e, 1), () -> this.resizeScreenEdge(e, 10));
+            y = this.actionRow(cx, y, "\u00a7e" + ScreenControlScreen.edgeName(e) + " \u00a7f" + ScreenControlScreen.signed(this.edgeValue(screen, e)), () -> this.resizeScreenEdge(e, -10), () -> this.resizeScreenEdge(e, -1), () -> this.resizeScreenEdge(e, 1), () -> this.resizeScreenEdge(e, 10), canManage);
         }
         // 底部按钮：改名「关闭」、宽 240，与上一行操作按钮同列（cx-120 起）并紧贴其上（去掉原 y += rowH 的空档）
         this.addRenderableWidget(Button.builder(Component.literal("\u5173\u95ed"), btn -> this.onClose()).bounds(cx - 120, this.ry(y), 240, 20).build());
@@ -273,6 +318,36 @@ extends ScrollableSettingsScreen {
         extractor.text(this.font, curText, curX, barY - 9, -6854);
     }
 
+    // ───────────── 权限（owner 或 OP≥2 可管理；普通玩家在他人屏幕上仅播放类可用） ─────────────
+
+    /** 当前玩家是否 OP（权限等级 ≥2）：与项目其它界面及服务端 canControl 同一套判定。 */
+    static boolean hasOpPermission() {
+        net.minecraft.client.player.LocalPlayer p = Minecraft.getInstance().player;
+        return p != null && p.permissions().hasPermission(
+                new net.minecraft.server.permissions.Permission.HasCommandLevel(
+                        net.minecraft.server.permissions.PermissionLevel.GAMEMASTERS));
+    }
+
+    /**
+     * 是否可管理（修改）该屏幕：owner 或 OP≥2（与服务端 {@code ScreenManager.canControl} 判定一致）。
+     *
+     * <p>普通玩家在别人的屏幕上只能使用播放类入口、发起播放（服务端自动走播放申请）与查看队列；
+     * 屏幕设置、移动、拉缩、曲率、队列增删改等一律置灰（服务端同样会拒绝这些操作）。
+     */
+    static boolean canManageScreen(CinemaScreen screen) {
+        if (screen == null) return false;
+        if (hasOpPermission()) return true;
+        net.minecraft.client.player.LocalPlayer p = Minecraft.getInstance().player;
+        return p != null && screen.ownerId() != null
+                && screen.ownerId().equals(p.getUUID().toString());
+    }
+
+    /** 按屏幕 UUID 判定管理权限（null = 全局队列等全局范围：仅 OP≥2；屏幕未知按不可管理处理）。 */
+    static boolean canManageScreen(UUID id) {
+        if (id == null) return hasOpPermission();
+        return canManageScreen(ClientScreenManager.get().getScreen(id));
+    }
+
     private void hint(String msg) {
         if (Minecraft.getInstance().player != null) {
             Minecraft.getInstance().player.sendSystemMessage(Component.literal(("\u00a77[CinemaForYou] " + msg)));
@@ -314,7 +389,8 @@ extends ScrollableSettingsScreen {
         return y + 22;
     }
 
-    private int stepRow(int cx, int y, String label, String valueText, BiFunction<Integer, CinemaScreen, CinemaScreen> applier) {
+    /** 数值调节行；enabled=false 时整行（值标签 + 四个加减按钮）置灰不可点。 */
+    private int stepRow(int cx, int y, String label, String valueText, BiFunction<Integer, CinemaScreen, CinemaScreen> applier, boolean enabled) {
         int big = 36;
         int small = 30;
         int mid = 96;
@@ -325,15 +401,26 @@ extends ScrollableSettingsScreen {
         int xMid = x1 + small + gap;
         int x3 = xMid + mid + gap;
         int x4 = x3 + small + gap;
-        this.addRenderableWidget(Button.builder(Component.literal(("\u00a7e" + label + " \u00a7f" + valueText)), btn -> {}).bounds(xMid, this.ry(y), mid, 20).build());
-        this.addRenderableWidget(Button.builder(Component.literal("-10"), b -> this.updateSettings(s -> (CinemaScreen)applier.apply(-10, (CinemaScreen)s))).bounds(x0, this.ry(y), big, 20).build());
-        this.addRenderableWidget(Button.builder(Component.literal("-1"), b -> this.updateSettings(s -> (CinemaScreen)applier.apply(-1, (CinemaScreen)s))).bounds(x1, this.ry(y), small, 20).build());
-        this.addRenderableWidget(Button.builder(Component.literal("+1"), b -> this.updateSettings(s -> (CinemaScreen)applier.apply(1, (CinemaScreen)s))).bounds(x3, this.ry(y), small, 20).build());
-        this.addRenderableWidget(Button.builder(Component.literal("+10"), b -> this.updateSettings(s -> (CinemaScreen)applier.apply(10, (CinemaScreen)s))).bounds(x4, this.ry(y), big, 20).build());
+        Button valueBtn = Button.builder(Component.literal(("\u00a7e" + label + " \u00a7f" + valueText)), btn -> {}).bounds(xMid, this.ry(y), mid, 20).build();
+        valueBtn.active = enabled;
+        this.addRenderableWidget(valueBtn);
+        Button dec10Btn = Button.builder(Component.literal("-10"), b -> this.updateSettings(s -> (CinemaScreen)applier.apply(-10, (CinemaScreen)s))).bounds(x0, this.ry(y), big, 20).build();
+        dec10Btn.active = enabled;
+        this.addRenderableWidget(dec10Btn);
+        Button dec1Btn = Button.builder(Component.literal("-1"), b -> this.updateSettings(s -> (CinemaScreen)applier.apply(-1, (CinemaScreen)s))).bounds(x1, this.ry(y), small, 20).build();
+        dec1Btn.active = enabled;
+        this.addRenderableWidget(dec1Btn);
+        Button inc1Btn = Button.builder(Component.literal("+1"), b -> this.updateSettings(s -> (CinemaScreen)applier.apply(1, (CinemaScreen)s))).bounds(x3, this.ry(y), small, 20).build();
+        inc1Btn.active = enabled;
+        this.addRenderableWidget(inc1Btn);
+        Button inc10Btn = Button.builder(Component.literal("+10"), b -> this.updateSettings(s -> (CinemaScreen)applier.apply(10, (CinemaScreen)s))).bounds(x4, this.ry(y), big, 20).build();
+        inc10Btn.active = enabled;
+        this.addRenderableWidget(inc10Btn);
         return y + 21;
     }
 
-    private int actionRow(int cx, int y, String centerText, Runnable dec10, Runnable dec1, Runnable inc1, Runnable inc10) {
+    /** 移动/拉缩行；enabled=false 时整行置灰不可点。 */
+    private int actionRow(int cx, int y, String centerText, Runnable dec10, Runnable dec1, Runnable inc1, Runnable inc10, boolean enabled) {
         int big = 36;
         int small = 30;
         int mid = 96;
@@ -344,11 +431,21 @@ extends ScrollableSettingsScreen {
         int xMid = x1 + small + gap;
         int x3 = xMid + mid + gap;
         int x4 = x3 + small + gap;
-        this.addRenderableWidget(Button.builder(Component.literal(centerText), btn -> {}).bounds(xMid, this.ry(y), mid, 20).build());
-        this.addRenderableWidget(Button.builder(Component.literal("-10"), b -> dec10.run()).bounds(x0, this.ry(y), big, 20).build());
-        this.addRenderableWidget(Button.builder(Component.literal("-1"), b -> dec1.run()).bounds(x1, this.ry(y), small, 20).build());
-        this.addRenderableWidget(Button.builder(Component.literal("+1"), b -> inc1.run()).bounds(x3, this.ry(y), small, 20).build());
-        this.addRenderableWidget(Button.builder(Component.literal("+10"), b -> inc10.run()).bounds(x4, this.ry(y), big, 20).build());
+        Button valueBtn = Button.builder(Component.literal(centerText), btn -> {}).bounds(xMid, this.ry(y), mid, 20).build();
+        valueBtn.active = enabled;
+        this.addRenderableWidget(valueBtn);
+        Button dec10Btn = Button.builder(Component.literal("-10"), b -> dec10.run()).bounds(x0, this.ry(y), big, 20).build();
+        dec10Btn.active = enabled;
+        this.addRenderableWidget(dec10Btn);
+        Button dec1Btn = Button.builder(Component.literal("-1"), b -> dec1.run()).bounds(x1, this.ry(y), small, 20).build();
+        dec1Btn.active = enabled;
+        this.addRenderableWidget(dec1Btn);
+        Button inc1Btn = Button.builder(Component.literal("+1"), b -> inc1.run()).bounds(x3, this.ry(y), small, 20).build();
+        inc1Btn.active = enabled;
+        this.addRenderableWidget(inc1Btn);
+        Button inc10Btn = Button.builder(Component.literal("+10"), b -> inc10.run()).bounds(x4, this.ry(y), big, 20).build();
+        inc10Btn.active = enabled;
+        this.addRenderableWidget(inc10Btn);
         return y + 21;
     }
 

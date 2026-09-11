@@ -68,10 +68,19 @@ public class ScreenSoundSettingsScreen extends ScrollableSettingsScreen {
                 + "  @ " + screen.center().toShortString(), cx, ry(y), w);
         y += 22;
 
+        // 权限：范围/衰减是屏幕字段（会改动对方屏幕），非 owner 且非 OP≥2 置灰；
+        // 音频延迟与播完行为是本机偏好，不受影响
+        boolean canManage = ScreenControlScreen.canManageScreen(screen);
+        if (!canManage) {
+            addGrayLabel("非本人屏幕不可操作：声音距离/衰减已置灰（播放与队列查看不受限）",
+                    cx, ry(y), w);
+            y += 14;
+        }
+
         // ── 声音传播范围（每屏覆盖，0=全局默认） ──
         int range = screen.audioRangeBlocks();
         addRenderableWidget(cycleButton(cx, y, 240,
-                "声音距离: " + rangeLabel(range, cfg), () -> {
+                "声音距离: " + rangeLabel(range, cfg), canManage, () -> {
                     int idx = indexOf(RANGES, range);
                     int next = RANGES[(idx + 1) % RANGES.length];
                     sendAudioSettings(next, screen.audioFalloffTenths());
@@ -81,7 +90,7 @@ public class ScreenSoundSettingsScreen extends ScrollableSettingsScreen {
         // ── 距离衰减（每屏覆盖，0=全局默认） ──
         int falloff = screen.audioFalloffTenths();
         addRenderableWidget(cycleButton(cx, y, 240,
-                "距离衰减: " + falloffLabel(falloff), () -> {
+                "距离衰减: " + falloffLabel(falloff), canManage, () -> {
                     int idx = indexOf(FALLOFFS, falloff);
                     int next = FALLOFFS[(idx + 1) % FALLOFFS.length];
                     sendAudioSettings(screen.audioRangeBlocks(), next);
@@ -106,7 +115,7 @@ public class ScreenSoundSettingsScreen extends ScrollableSettingsScreen {
                 ? "跟随全局（当前全局: " + modeLabel(cfg.defaultPlayMode) + "）"
                 : modeLabel(rawMode);
         addRenderableWidget(cycleButton(cx, y, 240,
-                "播完: " + display, () -> {
+                "播完: " + display, true, () -> {
                     Integer cur = cfg.rawPlayMode(screenId.toString());
                     int curBase = cur == null ? 0 : cur;
                     int next = (curBase + 1) % 4;
@@ -155,12 +164,16 @@ public class ScreenSoundSettingsScreen extends ScrollableSettingsScreen {
                 }));
     }
 
-    private Button cycleButton(int cx, int y, int w, String label, Runnable onClick) {        return Button.builder(Component.literal(label),
-                btn -> {
+    /** 循环切换按钮；enabled=false 时置灰不可点（非本人屏幕的设置项）。 */
+    private Button cycleButton(int cx, int y, int w, String label, boolean enabled, Runnable onClick) {
+        Button btn = Button.builder(Component.literal(label),
+                b -> {
                     onClick.run();
                     Minecraft.getInstance().execute(this::rebuildWidgets);
                 }
         ).bounds(cx - w / 2, ry(y), w, 20).build();
+        btn.active = enabled;
+        return btn;
     }
 
     /** 发送范围/衰减覆盖到服务端（连同该屏现有显示设置一起）。 */
@@ -269,6 +282,12 @@ public class ScreenSoundSettingsScreen extends ScrollableSettingsScreen {
     private void addLabel(String text, int cx, int y, int w) {
         addRenderableWidget(new GuiTextLabel(cx, y, w, 12, text,
                 GuiTextLabel.Align.CENTER, GuiTextLabel.YELLOW));
+    }
+
+    /** 以屏幕中心线居中的灰色说明文字（置灰提示用）。 */
+    private void addGrayLabel(String text, int cx, int y, int w) {
+        addRenderableWidget(new GuiTextLabel(cx, y, w, 12, text,
+                GuiTextLabel.Align.CENTER, GuiTextLabel.GRAY_LIGHT));
     }
 
     private static String truncate(String s, int max) {

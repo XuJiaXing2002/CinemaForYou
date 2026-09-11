@@ -22,13 +22,16 @@ import java.util.UUID;
  * @param positionMs    视频时钟位置（毫秒，PLAYING 时用作品同步基准）
  * @param sourceUrl     当前视频源（STOPPED 时为空字符串）
  * @param serverTimeMs  服务端发送此包时的 System.currentTimeMillis()，用于估算网络延迟
+ * @param fromRequest   当前内容是否来自"播放申请授权"（owner 接受申请后的播放）：
+ *                      true 时 owner 客户端播完不自动循环/连播（一次接受只授权一次播放）
  */
 public record ScreenStatePayload(
         UUID id,
         ScreenState state,
         long positionMs,
         String sourceUrl,
-        long serverTimeMs
+        long serverTimeMs,
+        boolean fromRequest
 ) implements CustomPacketPayload {
 
     public static final Identifier ID =
@@ -50,6 +53,8 @@ public record ScreenStatePayload(
                     ScreenStatePayload::sourceUrl,
                     net.minecraft.network.codec.ByteBufCodecs.LONG,
                     ScreenStatePayload::serverTimeMs,
+                    net.minecraft.network.codec.ByteBufCodecs.BOOL,
+                    ScreenStatePayload::fromRequest,
                     ScreenStatePayload::new
             );
 

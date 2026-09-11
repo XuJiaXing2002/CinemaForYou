@@ -272,6 +272,7 @@ public class ClientScreenManager {
                 retirePlayer(id);
                 if (sourceUrl != null && !sourceUrl.isEmpty()) {
                     VideoPlayer restarted = new VideoPlayer(id, newScreen, sourceUrl);
+                    restarted.setFromRequest(st != null && st.fromRequest);
                     restarted.start(restartPos);
                     if (st != null && st.state == ScreenState.PAUSED) {
                         restarted.pause();
@@ -298,6 +299,7 @@ public class ClientScreenManager {
         st.positionMs = payload.positionMs();
         st.sourceUrl = payload.sourceUrl();
         st.serverTimeMs = payload.serverTimeMs();
+        st.fromRequest = payload.fromRequest();
         st.lastSyncLocalMs = System.currentTimeMillis();
 
         // 估算网络延迟后的服务端当前位置
@@ -312,6 +314,8 @@ public class ClientScreenManager {
                 recordHistory(id, st.sourceUrl);
                 VideoPlayer existing = players.get(id);
                 if (existing != null && existing.getSourceUrl().equals(st.sourceUrl)) {
+                    // 服务端每次状态同步都带上"是否申请授权内容"，覆盖本地标记
+                    existing.setFromRequest(payload.fromRequest());
                     // 播放器已出错（解码失败等）：不做漂移修正，
                     // 等待服务端 STOP 或 URL 变更后重建，避免每 5 秒无意义 seek 刷屏
                     if (existing.getError() != null) {
@@ -320,9 +324,11 @@ public class ClientScreenManager {
                     // 上一条已播完（循环/重播/自动下一集场景）：
                     // 仅当服务端位置明显早于结尾（真重播）时才重建播放器；
                     // 位置仍接近结尾 = 周期校准广播，保持末帧等所有者操作。
+                    // 申请授权内容不自动重播（一次接受只授权一次播放）。
                     if (existing.hasEnded()) {
                         long dur = existing.getDurationMs();
-                        boolean restart = dur <= 0 || expectedPos < Math.max(1000L, dur - 1500L);
+                        boolean restart = !payload.fromRequest()
+                                && (dur <= 0 || expectedPos < Math.max(1000L, dur - 1500L));
                         if (restart) {
                             // 循环重播：复用实例（restart）而非 release+new。
                             // release() 的 join(200) 抢不出阻塞在 native grab 的解码线程，
@@ -436,8 +442,15 @@ public class ClientScreenManager {
         CinemaScreen screen = screens.get(id);
         if (screen == null) return;
         VideoPlayer vp = new VideoPlayer(id, screen, sourceUrl);
+        vp.setFromRequest(isRequestAuthorized(id));
         vp.start(startPos);
         players.put(id, vp);
+    }
+
+    /** 该屏当前内容是否来自播放申请授权（由服务端屏幕状态同步维护）。 */
+    private boolean isRequestAuthorized(UUID id) {
+        ClientState st = states.get(id);
+        return st != null && st.fromRequest;
     }
 
     private void pausePlayer(UUID id) {
@@ -529,5 +542,7 @@ public class ClientScreenManager {
         long positionMs = 0;
         long serverTimeMs = 0;
         long lastSyncLocalMs = 0;
+        /** 当前内容是否来自播放申请授权（owner 接受申请后的播放）：true 时播完不自动续播。 */
+        boolean fromRequest = false;
     }
 }

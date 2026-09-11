@@ -26,6 +26,11 @@ import java.util.Map;
  * 点某屏完成选择（写入屏幕控制页的 {@link ClientConfig#lastControlScreenId} 并返回上级界面，
  * 控制页据此切换当前屏幕）。
  *
+ * <p>列出<b>所有玩家</b>的屏幕（{@link ClientScreenManager#allScreens()} = 服务端全量同步，
+ * 不按 owner 过滤、也不过滤自己的屏幕）：主页玩家行显示「玩家名 + 屏幕 N 个」，
+ * 明细页每行显示 屏幕名 + 归属玩家名 + 坐标 + 创建时间；
+ * 两层各有一个搜索框（名称/自定义名/创建者），分页与返回机制同其它列表页。
+ *
  * <p>选择逻辑、搜索过滤（名称/自定义名/创建者）与返回刷新机制全部保持现状，仅改层级与展示。
  */
 public class TargetSearchScreen extends ScrollableSettingsScreen {
@@ -90,7 +95,7 @@ public class TargetSearchScreen extends ScrollableSettingsScreen {
 
         addRenderableWidget(new GuiTextLabel(cx, ry(y), w, 12,
                 isHome()
-                        ? "§e选择屏幕（按玩家分组，搜索名称或创建者）"
+                        ? "§e选择屏幕（所有玩家，按玩家分组，搜索名称或创建者）"
                         : "§e选择屏幕：" + ownerLabel + "（搜索名称或创建者）",
                 GuiTextLabel.Align.CENTER, GuiTextLabel.YELLOW));
         y += 15;
@@ -139,11 +144,12 @@ public class TargetSearchScreen extends ScrollableSettingsScreen {
         } else {
             for (int i = start; i < end; i++) {
                 CinemaScreen s = shown.get(i);
-                // 明细行：只显示 屏幕名 + 坐标 + 创建时间（不再显示创建者）；
+                // 明细行：屏幕名 + 归属玩家名 + 坐标 + 创建时间（归属一眼可见，便于选他人屏幕）；
                 // 信息全部放进按钮（MarqueeText 只做控制层，超宽时悬停自动滚动显示全部）
                 String time = CREATE_TIME_FMT.format(Instant.ofEpochMilli(s.createdAt())
                         .atZone(ZoneId.systemDefault()));
                 String label = "§e" + s.displayName()
+                        + "  §b" + ownerLabel
                         + "§7 @ " + s.center().toShortString() + "  §7" + time;
                 Button rowBtn = Button.builder(Component.literal(""), btn -> pick(s))
                         .bounds(left, ry(y), w, 20).build();

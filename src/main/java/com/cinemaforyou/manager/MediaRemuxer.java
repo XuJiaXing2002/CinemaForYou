@@ -63,8 +63,13 @@ public final class MediaRemuxer {
     private static final Object FFMPEG_LOCK = new Object();
     private static volatile boolean localOnlyLogged = false;
 
-    /** 一次延后播放请求：发起玩家 + 需要在该文件转封装完成后开播的屏幕（广播播放可多屏）。 */
-    private record Deferred(UUID playerId, List<UUID> screenIds) {}
+    /**
+     * 一次延后播放请求：发起玩家 + 需要在该文件转封装完成后开播的屏幕（广播播放可多屏）。
+     *
+     * @param auth 播放授权来源（非 null = 本次播放来自被接受的播放申请），
+     *             转封装完成后按授权播放处理（播完不自动循环/连播）
+     */
+    private record Deferred(UUID playerId, List<UUID> screenIds, ScreenManager.PlayAuth auth) {}
 
     private MediaRemuxer() {}
 
@@ -108,7 +113,7 @@ public final class MediaRemuxer {
      * 完成后自动播放）。返回 false 表示走正常播放流程。
      */
     public static boolean maybeDeferPlay(UUID screenId, ServerPlayer requester, String fileName) {
-        return maybeDeferPlay(List.of(screenId), requester, fileName);
+        return maybeDeferPlay(List.of(screenId), requester, fileName, null);
     }
 
     /**
@@ -118,6 +123,17 @@ public final class MediaRemuxer {
      * @param fileName 媒体库相对路径（可为"玩家名/视频.ts"子目录路径）
      */
     public static boolean maybeDeferPlay(List<UUID> screenIds, ServerPlayer requester, String fileName) {
+        return maybeDeferPlay(screenIds, requester, fileName, null);
+    }
+
+    /**
+     * 多屏版 + 授权来源：{@code auth} 非 null 时该次延后播放来自被接受的播放申请，
+     * 转封装完成后按授权播放处理（客户端据此在播完后不自动循环/连播）。
+     *
+     * @param auth 播放授权来源，可为 null（owner 直接播放）
+     */
+    public static boolean maybeDeferPlay(List<UUID> screenIds, ServerPlayer requester,
+                                         String fileName, ScreenManager.PlayAuth auth) {
         try {
             if (requester == null || fileName == null
                     || screenIds == null || screenIds.isEmpty()) return false;
@@ -147,7 +163,7 @@ public final class MediaRemuxer {
 
             List<Deferred> list = pending.computeIfAbsent(fileName, k -> new ArrayList<>());
             boolean newJob = list.isEmpty();
-            list.add(new Deferred(requester.getUUID(), List.copyOf(screenIds)));
+            list.add(new Deferred(requester.getUUID(), List.copyOf(screenIds), auth));
             if (newJob) {
                 CinemaForYou.LOGGER.info("[CinemaForYou] 自动转封装任务入队: {} ({}MB)",
                         fileName, src.length() / 1024 / 1024);
@@ -306,7 +322,14 @@ public final class MediaRemuxer {
                     if (wantPlay && mgr != null) {
                         for (UUID sid : d.screenIds()) {
                             if (mgr.isScreenActive(sid)) {
-                                mgr.play(sid, "file:" + (ok ? finalName : fileName), p);
+                                String playUrl = "file:" + (ok ? finalName : fileName);
+                                if (d.auth() != null) {
+                                    // 申请授权播放：保持授权语义（播完不自动循环/连播）
+                                    mgr.playFromRequest(sid, playUrl, p,
+                                            d.auth().initiatorId(), d.auth().initiatorName());
+                                } else {
+                                    mgr.play(sid, playUrl, p);
+                                }
                             }
                         }
                     }

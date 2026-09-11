@@ -107,43 +107,50 @@ public class CinemaSettingsScreen extends ScrollableSettingsScreen {
         y += rowH - 11;
 
         // ── 顶部全局设置项（前 5 个）：与下方长条按钮同 x、同宽（整行宽度）、同高（20），行距 21；
-        //    原「左侧黄色标题 + 右侧短按钮」两列布局已取消，标题并入按钮文案：功能名: 当前值（点击…） ──
+        //    原「左侧黄色标题 + 右侧短按钮」两列布局已取消，标题并入按钮文案：功能名: 当前值（点击…）
+        //    这 5 个都是全局设置：非 OP 置灰不可点（与下方入口/yt-dlp 同一套 OP 判定），OP 正常可用 ──
 
         // ── 渲染距离（全局默认值） ──
-        addRenderableWidget(Button.builder(
+        Button renderDistBtn = Button.builder(
                 Component.literal("渲染距离(全局): " + renderDistance + " 格（点击切换）"),
                 btn -> {
                     int idx = Math.max(0, RENDER_DISTANCES.indexOf(renderDistance));
                     renderDistance = RENDER_DISTANCES.get((idx + 1) % RENDER_DISTANCES.size());
                     btn.setMessage(Component.literal("渲染距离(全局): " + renderDistance + " 格（点击切换）"));
                 }
-        ).bounds(blockX, ry(y), blockW, 20).build());
+        ).bounds(blockX, ry(y), blockW, 20).build();
+        renderDistBtn.active = isOp;   // 全局设置：非 OP 置灰不可点
+        addRenderableWidget(renderDistBtn);
         y += rowH;
 
         // ── 默认音量（全局默认值） ──
-        addRenderableWidget(Button.builder(
+        Button volumeBtn = Button.builder(
                 Component.literal("默认音量(全局): " + volume + " %（点击切换）"),
                 btn -> {
                     int idx = Math.max(0, VOLUMES.indexOf(volume));
                     volume = VOLUMES.get((idx + 1) % VOLUMES.size());
                     btn.setMessage(Component.literal("默认音量(全局): " + volume + " %（点击切换）"));
                 }
-        ).bounds(blockX, ry(y), blockW, 20).build());
+        ).bounds(blockX, ry(y), blockW, 20).build();
+        volumeBtn.active = isOp;   // 全局设置：非 OP 置灰不可点
+        addRenderableWidget(volumeBtn);
         y += rowH;
 
         // ── 默认声音传播范围（全局默认值） ──
-        addRenderableWidget(Button.builder(
+        Button audioRangeBtn = Button.builder(
                 Component.literal("声音距离(全局): " + audioRange + " 格（点击切换）"),
                 btn -> {
                     int idx = Math.max(0, AUDIO_RANGES.indexOf(audioRange));
                     audioRange = AUDIO_RANGES.get((idx + 1) % AUDIO_RANGES.size());
                     btn.setMessage(Component.literal("声音距离(全局): " + audioRange + " 格（点击切换）"));
                 }
-        ).bounds(blockX, ry(y), blockW, 20).build());
+        ).bounds(blockX, ry(y), blockW, 20).build();
+        audioRangeBtn.active = isOp;   // 全局设置：非 OP 置灰不可点
+        addRenderableWidget(audioRangeBtn);
         y += rowH;
 
         // ── 默认距离衰减（全局默认值） ──
-        addRenderableWidget(Button.builder(
+        Button falloffBtn = Button.builder(
                 Component.literal("距离衰减(全局): " + falloffLabel(audioFalloffX10) + "（点击切换）"),
                 btn -> {
                     int idx = Math.max(0, AUDIO_FALLOFFS_X10.indexOf(audioFalloffX10));
@@ -151,14 +158,18 @@ public class CinemaSettingsScreen extends ScrollableSettingsScreen {
                     btn.setMessage(Component.literal("距离衰减(全局): "
                             + falloffLabel(audioFalloffX10) + "（点击切换）"));
                 }
-        ).bounds(blockX, ry(y), blockW, 20).build());
+        ).bounds(blockX, ry(y), blockW, 20).build();
+        falloffBtn.active = isOp;   // 全局设置：非 OP 置灰不可点
+        addRenderableWidget(falloffBtn);
         y += rowH;
 
         // ── 默认音频延迟补偿（全局默认值；点击打开输入框） ──
-        addRenderableWidget(Button.builder(
+        Button latencyBtn = Button.builder(
                 Component.literal("音频延迟(全局): " + globalLatencyLabel() + "（点击修改）"),
                 btn -> openGlobalLatencyEditor()
-        ).bounds(blockX, ry(y), blockW, 20).build());
+        ).bounds(blockX, ry(y), blockW, 20).build();
+        latencyBtn.active = isOp;   // 全局设置：非 OP 置灰不可点
+        addRenderableWidget(latencyBtn);
         y += rowH;
 
         // ── 播完行为（全局默认，对所有屏幕生效；每屏可在声音与播放设置里单独覆盖/跟随） ──

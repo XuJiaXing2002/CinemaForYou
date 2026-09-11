@@ -47,6 +47,10 @@ import java.util.UUID;
  * <p>队列明细沿用原渲染与按钮（▲▼ 调序、✕ 删除、点条目名播放/发申请），
  * 删除/清空/上移下移都发到服务端执行（服务端为唯一数据源：屏幕队列 owner 或 OP≥2 可操作，
  * 全局队列仅 OP≥2），删除与清空沿用两次点击确认。
+ *
+ * <p>权限（与服务端 {@code ScreenManager.canControl} 一致）：非本人屏幕且非 OP≥2 时，
+ * 队列的增（＋队列入口）/删（✕）/清空/上移下移一律置灰并显示灰字提示；
+ * 队列查看与点条目播放/发播放申请不受限（播放由服务端自动走播放申请）。
  */
 public class ScreenQueueManagerScreen extends Screen {
     @Override
@@ -226,36 +230,51 @@ public class ScreenQueueManagerScreen extends Screen {
                 }
         ).bounds(left + w - 58, 17, 58, 20).build());
 
+        // 非本人屏幕（且非 OP）时：队列操作置灰，顶部加一行灰字提示（查看/点播不受限）
+        boolean restrictedScope = !canOperateScope();
+        int rowsTop = ROWS_TOP + (restrictedScope ? 13 : 0);
+        if (restrictedScope) {
+            addRenderableWidget(new GuiTextLabel(cx, ROWS_TOP, w, 12,
+                    "非本人屏幕不可操作：队列仅可查看/点播（增删/清空/排序需 owner 或 OP≥2）",
+                    GuiTextLabel.Align.CENTER, GuiTextLabel.GRAY_LIGHT));
+        }
+
         if (rows.isEmpty()) {
             // 空状态提示（全局专用队列明细已按要求不再显示空状态行，此处返回 null）
             String hint = emptyHint();
             if (hint != null) {
                 addRenderableWidget(Button.builder(Component.literal(hint), btn -> {})
-                        .bounds(left, ROWS_TOP, w, 20).build());
+                        .bounds(left, rowsTop, w, 20).build());
             }
         } else {
             int maxPage = (rows.size() - 1) / ROWS_PER_PAGE;
             page = Math.min(page, maxPage);
             int start = page * ROWS_PER_PAGE;
             int end = Math.min(rows.size(), start + ROWS_PER_PAGE);
-            int y = ROWS_TOP;
+            int y = rowsTop;
             for (int r = start; r < end; r++) {
                 y = renderRow(rows.get(r), left, w, y);
             }
 
             // 底部固定"清空队列"（两次点击确认）：全局专用队列明细清全局队列，单屏明细清该屏队列
             if (view == View.GLOBAL_DETAIL) {
-                addRenderableWidget(Button.builder(
+                // 全局队列仅 OP≥2 可清空（服务端同样校验）：非 OP 置灰
+                Button clearGlobalBtn = Button.builder(
                         Component.literal(pendingClearGlobal ? "§c⚠确认清空全局队列?" : "🗑 清空全局队列"),
                         btn -> clearGlobalQueue()
-                ).bounds(left, this.height - 56, w, 20).build());
+                ).bounds(left, this.height - 56, w, 20).build();
+                clearGlobalBtn.active = ScreenControlScreen.hasOpPermission();
+                addRenderableWidget(clearGlobalBtn);
             } else if (view == View.SCREEN_DETAIL && targetScreen() != null) {
                 CinemaScreen s = targetScreen();
-                addRenderableWidget(Button.builder(
+                // 清空该屏队列：会改动屏幕状态，非 owner 且非 OP 置灰
+                Button clearScreenBtn = Button.builder(
                         Component.literal(pendingClearScreenId != null
                                 ? "§c⚠确认清空队列?" : "🗑 清空队列"),
                         btn -> clearQueue(s)
-                ).bounds(left, this.height - 56, w, 20).build());
+                ).bounds(left, this.height - 56, w, 20).build();
+                clearScreenBtn.active = ScreenControlScreen.canManageScreen(s);
+                addRenderableWidget(clearScreenBtn);
             }
 
             int py = this.height - 30;
@@ -284,6 +303,16 @@ public class ScreenQueueManagerScreen extends Screen {
                 Component.literal("← 返回上一级"),
                 btn -> onClose()
         ).bounds(left + 140, this.height - 30, Math.max(60, w - 140), 20).build());
+    }
+
+    /**
+     * 当前视图是否有权改动队列：单屏明细看该屏是否可管理（owner 或 OP≥2）；
+     * 全局专用队列仅 OP≥2；玩家/屏幕列表视图逐行判定（见 {@link #renderRow}）。
+     */
+    private boolean canOperateScope() {
+        if (view == View.SCREEN_DETAIL) return ScreenControlScreen.canManageScreen(screenId);
+        if (view == View.GLOBAL_DETAIL) return ScreenControlScreen.hasOpPermission();
+        return true;
     }
 
     /** 当前层级的空状态提示（无提示返回 null）。 */
@@ -358,14 +387,15 @@ public class ScreenQueueManagerScreen extends Screen {
                 addRenderableWidget(Button.builder(Component.literal(label),
                         btn -> GuiNav.open(this, new ScreenQueueManagerScreen(s.id())))
                         .bounds(left, y, w - 38, 20).build());
-                // 行右侧保留"清空该屏队列"（两次点击确认，与原来一致）
+                // 行右侧保留"清空该屏队列"（两次点击确认，与原来一致）；非本人屏幕且非 OP 置灰
                 String key = s.id().toString();
                 boolean hasEntries = QueueClient.countFor(s.id()) > 0;
                 Button clearBtn = Button.builder(
                         Component.literal(key.equals(pendingClearScreenId) ? "§c⚠确认" : "清空"),
                         btn -> clearQueue(s)
                 ).bounds(left + w - 36, y, 36, 20).build();
-                clearBtn.active = hasEntries || key.equals(pendingClearScreenId);
+                clearBtn.active = ScreenControlScreen.canManageScreen(s)
+                        && (hasEntries || key.equals(pendingClearScreenId));
                 addRenderableWidget(clearBtn);
                 return y + 22;
             }
@@ -431,15 +461,24 @@ public class ScreenQueueManagerScreen extends Screen {
         }
         addRenderableWidget(new MarqueeText(left, y, nameW, 20, nameBtn, shown));
 
+        // 上移/下移/删除：会改动队列（对方屏幕状态）——非 owner 且非 OP 置灰；
+        // 条目名按钮（点播/发申请）与查看不受限，保持可用
+        boolean canOperateEntries = globalEntry
+                ? ScreenControlScreen.hasOpPermission()
+                : ScreenControlScreen.canManageScreen(sid);
         int bx = left + nameW + 2;
-        addRenderableWidget(Button.builder(Component.literal("▲"),
+        Button upBtn = Button.builder(Component.literal("▲"),
                 btn -> move(sid, index, -1)
-        ).bounds(bx, y, 28, 20).build());
-        addRenderableWidget(Button.builder(Component.literal("▼"),
+        ).bounds(bx, y, 28, 20).build();
+        upBtn.active = canOperateEntries;
+        addRenderableWidget(upBtn);
+        Button downBtn = Button.builder(Component.literal("▼"),
                 btn -> move(sid, index, 1)
-        ).bounds(bx + 30, y, 28, 20).build());
+        ).bounds(bx + 30, y, 28, 20).build();
+        downBtn.active = canOperateEntries;
+        addRenderableWidget(downBtn);
         String removeKey = (globalEntry ? "global" : String.valueOf(sid)) + "#" + index;
-        addRenderableWidget(Button.builder(
+        Button removeBtn = Button.builder(
                 Component.literal(removeKey.equals(pendingRemoveKey) ? "§c⚠?" : "✕"),
                 btn -> {
                     // 删除队列项：两次点击确认（与本地视频库删除同一套机制）
@@ -452,7 +491,9 @@ public class ScreenQueueManagerScreen extends Screen {
                     pendingRemoveKey = null;
                     remove(sid, index);
                 }
-        ).bounds(bx + 60, y, 28, 20).build());
+        ).bounds(bx + 60, y, 28, 20).build();
+        removeBtn.active = canOperateEntries;
+        addRenderableWidget(removeBtn);
         return y + 22;
     }
 

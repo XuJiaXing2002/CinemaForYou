@@ -15,7 +15,8 @@ import java.util.UUID;
  *
  * <p>服务端校验权限后执行并全量广播最新队列（{@link ScreenQueuePayload}）。
  *
- * <p>屏幕队列操作（屏幕控制页入口，owner 或 OP≥2 可操作，"播完行为=自动播放下一个"
+ * <p>屏幕队列操作（屏幕控制页入口，owner 或 OP≥2 可操作；其中 {@link #ACTION_PLAY}
+ * 播放为非 owner 时转播放申请，"播完行为=自动播放下一个"
  * 按此顺序自动连播）：
  * <ul>
  *   <li>{@link #ACTION_ADD} - 入队（{@code url} 必填，{@code id} 为屏幕）；</li>
@@ -23,7 +24,7 @@ import java.util.UUID;
  *   <li>{@link #ACTION_CLEAR} - 清空某屏队列；</li>
  *   <li>{@link #ACTION_MOVE} - 上移下移（{@code index} → {@code toIndex}）；</li>
  *   <li>{@link #ACTION_PLAY} - 立即播放队列中第 {@code index} 项（不删除该条目）；
- *       非 owner/非 OP 时改为向该屏 owner 发送同款播放申请（接受后按该条目播放）。</li>
+ *       owner 直接播放，其它玩家（含 OP/管理员）改为向该屏 owner 发送同款播放申请（接受后按该条目播放）。</li>
  * </ul>
  *
  * <p>全局播放队列操作（总设置入口，仅 OP≥2；条目不参与自动连播，
