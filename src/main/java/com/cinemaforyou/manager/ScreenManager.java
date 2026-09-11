@@ -507,13 +507,11 @@ public class ScreenManager {
         owner.sendSystemMessage(Component.literal(
                 "§e[CinemaForYou] §f收到来自 §b" + item.batch.initiatorName + "§f 的播放申请："));
         owner.sendSystemMessage(Component.literal("§f  视频: ").append(videoLabel(item.batch.url)));
-        owner.sendSystemMessage(Component.literal(
-                "§f  屏幕: §a「" + item.screenName + "」§f @ " + item.screenWhere));
         MutableComponent buttons = Component.literal("§f  [");
         buttons.append(Component.literal("§a✔ 接受").withStyle(Style.EMPTY
                 .withClickEvent(new ClickEvent.RunCommand("/cinema accept " + item.requestId))
                 .withHoverEvent(new HoverEvent.ShowText(Component.literal(
-                        "§a同意在「" + item.screenName + "」上播放该视频")))));
+                        "§a同意在该屏幕播放该视频")))));
         buttons.append(Component.literal("§f] ["));
         buttons.append(Component.literal("§c✘ 拒绝").withStyle(Style.EMPTY
                 .withClickEvent(new ClickEvent.RunCommand("/cinema deny " + item.requestId))
