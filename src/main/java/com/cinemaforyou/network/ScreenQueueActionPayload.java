@@ -22,7 +22,8 @@ import java.util.UUID;
  *   <li>{@link #ACTION_REMOVE} - 删除（{@code index}）；</li>
  *   <li>{@link #ACTION_CLEAR} - 清空某屏队列；</li>
  *   <li>{@link #ACTION_MOVE} - 上移下移（{@code index} → {@code toIndex}）；</li>
- *   <li>{@link #ACTION_PLAY} - 立即播放队列中第 {@code index} 项（不删除该条目）。</li>
+ *   <li>{@link #ACTION_PLAY} - 立即播放队列中第 {@code index} 项（不删除该条目）；
+ *       非 owner/非 OP 时改为向该屏 owner 发送同款播放申请（接受后按该条目播放）。</li>
  * </ul>
  *
  * <p>全局播放队列操作（总设置入口，仅 OP≥2；条目不参与自动连播，

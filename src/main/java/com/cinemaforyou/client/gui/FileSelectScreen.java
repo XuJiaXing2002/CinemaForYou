@@ -64,20 +64,20 @@ public class FileSelectScreen extends Screen {
         clearWidgets();
         int cx = this.width / 2;
 
-        // 自定义 ID 输入框
+        // 自定义 ID 输入框（整体上移贴屏幕顶部：原 y=24 → 2，列表/提示随之上移，行距不变）
         nameField = new EditBox(this.font, 200, 16,
                 Component.translatable("gui.cinemaforyou.url_input.name"));
         nameField.setX(cx - 100);
-        nameField.setY(24);
+        nameField.setY(2);
         nameField.setMaxLength(32);
         nameField.setHint(Component.literal("自定义 ID（可留空）"));
         addRenderableWidget(nameField);
 
         if (files.isEmpty()) {
             Button empty = Button.builder(
-                    Component.literal("§c无视频文件 - 请放入 游戏目录/cinema/videos/"),
+                    Component.literal("§c无视频文件：请放入 游戏目录/cinema/videos/"),
                     btn -> {}
-            ).bounds(cx - 155, 60, 310, 20).build();
+            ).bounds(cx - 155, 38, 310, 20).build();
             empty.active = false;
             addRenderableWidget(empty);
         } else {
@@ -91,7 +91,7 @@ public class FileSelectScreen extends Screen {
                 addRenderableWidget(Button.builder(
                         Component.literal("§a▶ " + f.getName()),
                         btn -> playFile(f)
-                ).bounds(cx - 150, 48 + row * 22, 300, 20).build());
+                ).bounds(cx - 150, 26 + row * 22, 300, 20).build());
             }
 
             // 翻页按钮

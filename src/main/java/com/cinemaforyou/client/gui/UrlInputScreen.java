@@ -51,66 +51,71 @@ public class UrlInputScreen extends Screen {
 
     @Override
     protected void init() {
+        // 整体上移贴屏幕顶部（原以屏幕中心为基准 cy-52 起，现改为从 y=2 起），行距不变
         int cx = this.width / 2;
-        int cy = this.height / 2;
+        int y = 2;
 
         // 角点信息（禁用按钮 = 纯文本标签，走已验证的组件渲染路径）
         Button cornersLabel = Button.builder(
                 Component.literal("§7角点1: " + corner1.toShortString()
                         + "  →  角点2: " + corner2.toShortString()),
                 btn -> {}
-        ).bounds(cx - 155, cy - 52, 310, 16).build();
+        ).bounds(cx - 155, y, 310, 16).build();
         cornersLabel.active = false;
         addRenderableWidget(cornersLabel);
+        y += 24;
 
         // 自定义 ID 输入框（可选）
         nameField = new EditBox(this.font, 300, 18,
                 Component.translatable("gui.cinemaforyou.url_input.name"));
         nameField.setX(cx - 150);
-        nameField.setY(cy - 28);
+        nameField.setY(y);
         nameField.setMaxLength(32);
         nameField.setHint(Component.literal("自定义 ID（可留空，如 main）"));
         addRenderableWidget(nameField);
+        y += 24;
 
         // URL 输入框
         urlField = new EditBox(this.font, 300, 18,
                 Component.translatable("gui.cinemaforyou.url_input.url"));
         urlField.setX(cx - 150);
-        urlField.setY(cy - 4);
+        urlField.setY(y);
         urlField.setMaxLength(512);
         urlField.setHint(Component.literal("https://... 或 videos/foo.mp4"));
         addRenderableWidget(urlField);
         setInitialFocus(urlField);
+        y += 26;
 
         // 创建并播放按钮（需填写视频链接；本地文件请用“浏览文件”选择）
         addRenderableWidget(Button.builder(
                 Component.literal("创建并播放"),
                 btn -> onCreateAndPlay()
-        ).bounds(cx - 150, cy + 22, 95, 20).build());
+        ).bounds(cx - 150, y, 95, 20).build());
 
         // 打开文件按钮
         addRenderableWidget(Button.builder(
                 Component.translatable("gui.cinemaforyou.url_input.browse"),
                 btn -> Minecraft.getInstance().gui.setScreen(
                         new FileSelectScreen(corner1, corner2))
-        ).bounds(cx - 50, cy + 22, 95, 20).build());
+        ).bounds(cx - 50, y, 95, 20).build());
 
         // 取消按钮
         addRenderableWidget(Button.builder(
                 Component.translatable("gui.cinemaforyou.url_input.cancel"),
                 btn -> onClose()
-        ).bounds(cx + 50, cy + 22, 95, 20).build());
+        ).bounds(cx + 50, y, 95, 20).build());
+        y += 26;
 
         // 设置按钮 + 创建空屏幕（无需视频源，稍后可再选片源播放）
         addRenderableWidget(Button.builder(
                 Component.translatable("gui.cinemaforyou.url_input.settings"),
                 btn -> GuiNav.open(this, new CinemaSettingsScreen())
-        ).bounds(cx - 150, cy + 48, 150, 20).build());
+        ).bounds(cx - 150, y, 150, 20).build());
 
         addRenderableWidget(Button.builder(
                 Component.literal("创建空屏幕"),
                 btn -> onCreateEmpty()
-        ).bounds(cx + 5, cy + 48, 150, 20).build());
+        ).bounds(cx + 5, y, 150, 20).build());
     }
 
     private void onCreateAndPlay() {

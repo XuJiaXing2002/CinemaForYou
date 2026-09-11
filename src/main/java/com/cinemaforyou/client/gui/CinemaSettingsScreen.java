@@ -88,10 +88,11 @@ public class CinemaSettingsScreen extends ScrollableSettingsScreen {
         // OP 权限（等级 ≥2）：以下涉及"屏幕/播放"的入口仅 OP 可操作（保存/取消不受限）
         boolean isOp = hasOpPermission();
         int cx = this.width / 2;
-        int left = cx - 155;   // 标签列
-        int right = cx + 5;    // 控件列
-        int labelW = 150, ctrlW = 150;
-        int y = 8, rowH = 21;
+        // 整行宽度控件几何：所有长条按钮/输入框共用，保证左右边界对齐
+        int blockW = Math.min(300, this.width - 30);
+        int blockX = cx - blockW / 2;
+        // 内容起始 y=2：首行说明文字贴屏幕顶部，去掉原来的顶部留白（行距保持不变）
+        int y = 2, rowH = 21;
         int maxW = Math.min(310, this.width - 20);
         if (!browserOpen) {
             scrolledToPopup = false;
@@ -105,151 +106,60 @@ public class CinemaSettingsScreen extends ScrollableSettingsScreen {
         }
         y += rowH - 11;
 
-        // ── 渲染距离 ──
-        addLabel("渲染距离", left, ry(y), labelW);
+        // ── 顶部全局设置项（前 5 个）：与下方长条按钮同 x、同宽（整行宽度）、同高（20），行距 21；
+        //    原「左侧黄色标题 + 右侧短按钮」两列布局已取消，标题并入按钮文案：功能名: 当前值（点击…） ──
+
+        // ── 渲染距离（全局默认值） ──
         addRenderableWidget(Button.builder(
-                Component.literal(renderDistance + " 格（点击切换）"),
+                Component.literal("渲染距离(全局): " + renderDistance + " 格（点击切换）"),
                 btn -> {
                     int idx = Math.max(0, RENDER_DISTANCES.indexOf(renderDistance));
                     renderDistance = RENDER_DISTANCES.get((idx + 1) % RENDER_DISTANCES.size());
-                    btn.setMessage(Component.literal(renderDistance + " 格（点击切换）"));
+                    btn.setMessage(Component.literal("渲染距离(全局): " + renderDistance + " 格（点击切换）"));
                 }
-        ).bounds(right, ry(y), ctrlW, 18).build());
+        ).bounds(blockX, ry(y), blockW, 20).build());
         y += rowH;
 
-        // ── 默认音量 ──
-        addLabel("默认音量", left, ry(y), labelW);
+        // ── 默认音量（全局默认值） ──
         addRenderableWidget(Button.builder(
-                Component.literal(volume + " %（点击切换）"),
+                Component.literal("默认音量(全局): " + volume + " %（点击切换）"),
                 btn -> {
                     int idx = Math.max(0, VOLUMES.indexOf(volume));
                     volume = VOLUMES.get((idx + 1) % VOLUMES.size());
-                    btn.setMessage(Component.literal(volume + " %（点击切换）"));
+                    btn.setMessage(Component.literal("默认音量(全局): " + volume + " %（点击切换）"));
                 }
-        ).bounds(right, ry(y), ctrlW, 18).build());
+        ).bounds(blockX, ry(y), blockW, 20).build());
         y += rowH;
 
-        // ── 默认声音传播范围 ──
-        addLabel("声音距离(默认)", left, ry(y), labelW);
+        // ── 默认声音传播范围（全局默认值） ──
         addRenderableWidget(Button.builder(
-                Component.literal(audioRange + " 格（点击切换）"),
+                Component.literal("声音距离(全局): " + audioRange + " 格（点击切换）"),
                 btn -> {
                     int idx = Math.max(0, AUDIO_RANGES.indexOf(audioRange));
                     audioRange = AUDIO_RANGES.get((idx + 1) % AUDIO_RANGES.size());
-                    btn.setMessage(Component.literal(audioRange + " 格（点击切换）"));
+                    btn.setMessage(Component.literal("声音距离(全局): " + audioRange + " 格（点击切换）"));
                 }
-        ).bounds(right, ry(y), ctrlW, 18).build());
+        ).bounds(blockX, ry(y), blockW, 20).build());
         y += rowH;
 
-        // ── 默认距离衰减 ──
-        addLabel("距离衰减(默认)", left, ry(y), labelW);
+        // ── 默认距离衰减（全局默认值） ──
         addRenderableWidget(Button.builder(
-                Component.literal(falloffLabel(audioFalloffX10) + "（点击切换）"),
+                Component.literal("距离衰减(全局): " + falloffLabel(audioFalloffX10) + "（点击切换）"),
                 btn -> {
                     int idx = Math.max(0, AUDIO_FALLOFFS_X10.indexOf(audioFalloffX10));
                     audioFalloffX10 = AUDIO_FALLOFFS_X10.get((idx + 1) % AUDIO_FALLOFFS_X10.size());
-                    btn.setMessage(Component.literal(falloffLabel(audioFalloffX10) + "（点击切换）"));
+                    btn.setMessage(Component.literal("距离衰减(全局): "
+                            + falloffLabel(audioFalloffX10) + "（点击切换）"));
                 }
-        ).bounds(right, ry(y), ctrlW, 18).build());
+        ).bounds(blockX, ry(y), blockW, 20).build());
         y += rowH;
 
-        // ── 默认音频延迟补偿 ──
-        addLabel("音频延迟(默认)", left, ry(y), labelW);
+        // ── 默认音频延迟补偿（全局默认值；点击打开输入框） ──
         addRenderableWidget(Button.builder(
-                Component.literal(globalLatencyLabel() + "（点击修改）"),
+                Component.literal("音频延迟(全局): " + globalLatencyLabel() + "（点击修改）"),
                 btn -> openGlobalLatencyEditor()
-        ).bounds(right, ry(y), ctrlW, 18).build());
-        y += rowH;
-
-        // ── yt-dlp 自动下载（需要 OP） ──
-        addLabel("yt-dlp 自动下载", left, ry(y), labelW);
-        Button ytDlpBtn = toggleButton(right, ry(y), ctrlW, autoDownloadYtDlp, v -> autoDownloadYtDlp = v);
-        if (!isOp) {
-            ytDlpBtn.active = false;
-            ytDlpBtn.setMessage(Component.literal("§7需要OP权限"));
-        }
-        addRenderableWidget(ytDlpBtn);
-        y += rowH;
-
-        // ── 选择预览框 / 调试信息 ──
-        addLabel("对角点选择预览框", left, ry(y), labelW);
-        addRenderableWidget(toggleButton(right, ry(y), ctrlW, showSelectionBox, v -> showSelectionBox = v));
-        y += rowH;
-
-        addLabel("调试信息（聊天栏）", left, ry(y), labelW);
-        addRenderableWidget(toggleButton(right, ry(y), ctrlW, showDebugInfo, v -> showDebugInfo = v));
-        y += rowH + 2;
-
-        // ── cookies / 本地视频目录（整行宽度的长条按钮 + 等宽输入框），整体排在下组长条按钮上方 ──
-        // 与下方"目标屏幕/服务器媒体库"等长条按钮同 x、同宽（= 整行宽度）、同高，无黄色标题文字
-        int blockW = Math.min(300, this.width - 30);
-        int blockX = cx - blockW / 2;
-
-        // ① 长条按钮「选择cookies文件」：点击直接弹出系统"选择文件"对话框
-        addRenderableWidget(Button.builder(
-                Component.literal("选择cookies文件"),
-                btn -> chooseCookiesFile()
         ).bounds(blockX, ry(y), blockW, 20).build());
-        y += 22;
-
-        // ② cookies 文件路径输入框：与上方按钮同 x、同宽，紧贴其下
-        cookiesFileField = new EditBox(this.font, blockW, 18,
-                Component.translatable("gui.cinemaforyou.settings.cookies_file"));
-        cookiesFileField.setX(blockX);
-        cookiesFileField.setY(ry(y));
-        cookiesFileField.setMaxLength(256);
-        cookiesFileField.setValue(cookiesFile);
-        cookiesFileField.setHint(Component.literal("如 cookies.txt（优先于浏览器）"));
-        addRenderableWidget(cookiesFileField);
-        y += 20;
-
-        // ③ 长条按钮「浏览本地文件夹」：点击直接弹出系统"选择文件夹"对话框
-        addRenderableWidget(Button.builder(
-                Component.literal("浏览本地文件夹"),
-                btn -> chooseVideosDir()
-        ).bounds(blockX, ry(y), blockW, 20).build());
-        y += 22;
-
-        // ④ 本地视频目录输入框：与上方按钮同 x、同宽，紧贴其下
-        videosDirField = new EditBox(this.font, blockW, 18,
-                Component.translatable("gui.cinemaforyou.settings.videos_dir"));
-        videosDirField.setX(blockX);
-        videosDirField.setY(ry(y));
-        videosDirField.setMaxLength(256);
-        videosDirField.setValue(videosDir.isEmpty() ? "cinema/videos" : videosDir);
-        videosDirField.setHint(Component.literal("cinema/videos 或 D:\\Videos"));
-        addRenderableWidget(videosDirField);
-        y += 20;
-
-        // ⑤ cookies来源浏览器：仍是下拉选项（点击弹出浏览器列表），长条按钮样式，无输入框
-        addRenderableWidget(Button.builder(
-                Component.literal("cookies来源浏览器: " + browserLabel(cookiesBrowser)
-                        + (browserOpen ? " ▴" : " ▾")),
-                btn -> {
-                    browserOpen = !browserOpen;
-                    rebuildWidgets();
-                }
-        ).bounds(blockX, ry(y), blockW, 20).build());
-        cookiesBrowserRowY = y;
         y += rowH;
-        if (browserOpen) {
-            // 向下展开并预留空间：下方控件整体下移，选项不会被遮挡、可正常点击
-            int itemH = 15;
-            int py = ry(y);
-            for (String b : BROWSERS) {
-                String label = browserLabel(b);
-                addRenderableWidget(Button.builder(
-                        Component.literal(label),
-                        btn -> {
-                            cookiesBrowser = b;
-                            browserOpen = false;
-                            rebuildWidgets();
-                        }
-                ).bounds(blockX, py, blockW, 13).build());
-                py += itemH;
-            }
-            y += BROWSERS.size() * itemH; // 为展开的选项预留纵向空间
-        }
 
         // ── 播完行为（全局默认，对所有屏幕生效；每屏可在声音与播放设置里单独覆盖/跟随） ──
         final int[] gMode = {0};
@@ -343,7 +253,97 @@ public class CinemaSettingsScreen extends ScrollableSettingsScreen {
         ).bounds(cx - Math.min(300, this.width - 30) / 2, ry(y),
                 Math.min(300, this.width - 30), 20).build();
         addRenderableWidget(adminBtn);
-        y += rowH + 6;   // 原底部播放行为提示已删除，保存/取消相应上移
+        y += rowH;
+
+        // ── cookies / 本地视频目录（整行宽度的长条按钮 + 等宽输入框）：排在常用入口组下方、3 个开关按钮上方 ──
+        // 与上方所有长条按钮同 x、同宽（= 整行宽度）、同高
+
+        // ① 长条按钮「选择cookies文件」：点击直接弹出系统"选择文件"对话框
+        addRenderableWidget(Button.builder(
+                Component.literal("选择cookies文件"),
+                btn -> chooseCookiesFile()
+        ).bounds(blockX, ry(y), blockW, 20).build());
+        y += 22;
+
+        // ② cookies 文件路径输入框：与上方按钮同 x、同宽，紧贴其下
+        cookiesFileField = new EditBox(this.font, blockW, 18,
+                Component.translatable("gui.cinemaforyou.settings.cookies_file"));
+        cookiesFileField.setX(blockX);
+        cookiesFileField.setY(ry(y));
+        cookiesFileField.setMaxLength(256);
+        cookiesFileField.setValue(cookiesFile);
+        cookiesFileField.setHint(Component.literal("如 cookies.txt（优先于浏览器）"));
+        addRenderableWidget(cookiesFileField);
+        y += 20;
+
+        // ③ 长条按钮「浏览本地文件夹」：点击直接弹出系统"选择文件夹"对话框
+        addRenderableWidget(Button.builder(
+                Component.literal("浏览本地文件夹"),
+                btn -> chooseVideosDir()
+        ).bounds(blockX, ry(y), blockW, 20).build());
+        y += 22;
+
+        // ④ 本地视频目录输入框：与上方按钮同 x、同宽，紧贴其下
+        videosDirField = new EditBox(this.font, blockW, 18,
+                Component.translatable("gui.cinemaforyou.settings.videos_dir"));
+        videosDirField.setX(blockX);
+        videosDirField.setY(ry(y));
+        videosDirField.setMaxLength(256);
+        videosDirField.setValue(videosDir.isEmpty() ? "cinema/videos" : videosDir);
+        videosDirField.setHint(Component.literal("cinema/videos 或 D:\\Videos"));
+        addRenderableWidget(videosDirField);
+        y += 20;
+
+        // ⑤ cookies来源浏览器：仍是下拉选项（点击弹出浏览器列表），长条按钮样式，无输入框
+        addRenderableWidget(Button.builder(
+                Component.literal("cookies来源浏览器: " + browserLabel(cookiesBrowser)
+                        + (browserOpen ? " ▴" : " ▾")),
+                btn -> {
+                    browserOpen = !browserOpen;
+                    rebuildWidgets();
+                }
+        ).bounds(blockX, ry(y), blockW, 20).build());
+        cookiesBrowserRowY = y;
+        y += rowH;
+        if (browserOpen) {
+            // 向下展开并预留空间：下方控件整体下移，选项不会被遮挡、可正常点击
+            int itemH = 15;
+            int py = ry(y);
+            for (String b : BROWSERS) {
+                String label = browserLabel(b);
+                addRenderableWidget(Button.builder(
+                        Component.literal(label),
+                        btn -> {
+                            cookiesBrowser = b;
+                            browserOpen = false;
+                            rebuildWidgets();
+                        }
+                ).bounds(blockX, py, blockW, 13).build());
+                py += itemH;
+            }
+            y += BROWSERS.size() * itemH; // 为展开的选项预留纵向空间
+        }
+
+        // ── yt-dlp 自动下载（需要 OP） / 选择预览框 / 调试信息：这三个开关整组下移到 cookies 区块之后 ──
+        Button ytDlpBtn = toggleButton(blockX, ry(y), blockW, "yt-dlp 自动下载",
+                autoDownloadYtDlp, v -> autoDownloadYtDlp = v);
+        if (!isOp) {
+            ytDlpBtn.active = false;
+            ytDlpBtn.setMessage(Component.literal("yt-dlp 自动下载: §7需要OP权限"));
+        }
+        addRenderableWidget(ytDlpBtn);
+        y += rowH;
+
+        // ── 选择预览框 / 调试信息 ──
+        addRenderableWidget(toggleButton(blockX, ry(y), blockW, "对角点选择预览框",
+                showSelectionBox, v -> showSelectionBox = v));
+        y += rowH;
+
+        addRenderableWidget(toggleButton(blockX, ry(y), blockW, "调试信息（聊天栏）",
+                showDebugInfo, v -> showDebugInfo = v));
+        y += rowH;
+
+        y += 6;   // 最后一个内容按钮（调试信息）→ 保存/取消 的额外间距（保持原底部 7px，内容总高不变）
 
         // ── 保存 / 取消 ──
         addRenderableWidget(Button.builder(
@@ -399,17 +399,19 @@ public class CinemaSettingsScreen extends ScrollableSettingsScreen {
                 GuiTextLabel.Align.CENTER, GuiTextLabel.YELLOW));
     }
 
-    private Button toggleButton(int x, int y, int w, boolean initial,
+    /** 整行宽度的开关按钮：文案「功能名: 开/关（点击切换）」，点击原地切换（不改动其它设置项）。 */
+    private Button toggleButton(int x, int y, int w, String name, boolean initial,
                                 java.util.function.Consumer<Boolean> setter) {
         boolean[] state = {initial};
         Button btn = Button.builder(
-                Component.literal(state[0] ? "§a开" : "§c关"),
+                Component.literal(name + ": " + (state[0] ? "§a开" : "§c关") + "（点击切换）"),
                 b -> {
                     state[0] = !state[0];
                     setter.accept(state[0]);
-                    b.setMessage(Component.literal(state[0] ? "§a开" : "§c关"));
+                    b.setMessage(Component.literal(name + ": "
+                            + (state[0] ? "§a开" : "§c关") + "（点击切换）"));
                 }
-        ).bounds(x, y, w, 18).build();
+        ).bounds(x, y, w, 20).build();
         return btn;
     }
 

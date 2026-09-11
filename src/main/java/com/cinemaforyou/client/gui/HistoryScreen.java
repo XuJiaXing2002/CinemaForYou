@@ -17,7 +17,9 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -25,10 +27,14 @@ import java.util.UUID;
  * （仅本人）、清空本人记录、立即播放/加入队列。
  *
  * <ul>
- *   <li>无参构造：总设置入口——向所有屏幕的 owner 发送播放申请（首次点击提示确认，
- *       再点一次才下发）；「＋队列」加入全局播放队列（不参与自动连播）；</li>
- *   <li>{@link #HistoryScreen(UUID)}：屏幕控制页入口——只作用于该屏。</li>
+ *   <li>无参构造：总设置入口——主页按玩家分组汇总（一行一个玩家：玩家名 + 历史 N 条），
+ *       点玩家行进入该玩家的历史明细页（明细页沿用现有条目渲染与全部按钮；
+ *       播放/入队仍向所有屏幕发送申请，与全局入口一致）；</li>
+ *   <li>{@link #HistoryScreen(UUID)}：屏幕控制页入口——只作用于该屏（保持原样）。</li>
  * </ul>
+ *
+ * <p>数据来源：服务端 PlayLog（{@link PlayLogPayload.Entry}，含 playerUuid/playerName），
+ * 按 playerUuid 分组（无 uuid 时按名字归组），显示名取 playerName（缺失为"未知玩家"）。
  */
 public class HistoryScreen extends ScrollableSettingsScreen {
 
@@ -36,26 +42,47 @@ public class HistoryScreen extends ScrollableSettingsScreen {
     private static final DateTimeFormatter FMT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
-    /** 目标屏幕；null = 总设置入口（播放到所有屏幕）。 */
+    /** 目标屏幕；null = 全局入口（总设置入口的主页 / 玩家明细页）。 */
     private final UUID screenId;
+    /** 全局入口玩家分组键（playerUuid，无 uuid 时为 "name:玩家名"）；null = 未按玩家过滤。 */
+    private final String playerKey;
+    /** 分组玩家显示名（明细页标题用）。 */
+    private final String playerLabel;
+
     private String query = "";
     private int page = 0;
     private EditBox searchBox;
-    /** 二次确认状态（与本地视频库一致的机制）：null=无；CLEAR_KEY=清空我的历史；否则为待删除记录 id。 */
+    /** 二次确认状态（与本地视频库一致的机制）：null=无；CLEAR_KEY=清空全部；否则为待删除记录 id。 */
     private static final String CLEAR_KEY = "__clear_mine__";
     private String pendingDelete = null;
     /** 全局播放入口的二次确认：待确认播放的 URL（首次点击只提示，再点一次真正播放）。 */
     private String pendingPlayUrl = null;
 
-    /** 总设置入口：播放/入队作用于所有屏幕。 */
+    /** 总设置入口：主页按玩家分组；播放/入队作用于所有屏幕。 */
     public HistoryScreen() {
-        this(null);
+        this(null, null, null);
     }
 
     /** @param screenId 屏幕控制页入口（只作用于该屏）；null = 总设置入口（所有屏幕）。 */
     public HistoryScreen(UUID screenId) {
+        this(screenId, null, null);
+    }
+
+    /** 全局主页点某玩家 → 该玩家的历史明细页（播放/入队仍作用于所有屏幕，逻辑不变）。 */
+    public static HistoryScreen forPlayer(String playerKey, String playerLabel) {
+        return new HistoryScreen(null, playerKey, playerLabel);
+    }
+
+    private HistoryScreen(UUID screenId, String playerKey, String playerLabel) {
         super(Component.literal("播放历史"));
         this.screenId = screenId;
+        this.playerKey = playerKey;
+        this.playerLabel = playerLabel;
+    }
+
+    /** 是否全局入口的玩家分组主页（未指定屏幕、也未过滤玩家）。 */
+    private boolean isGroupHome() {
+        return screenId == null && playerKey == null;
     }
 
     @Override
@@ -79,13 +106,11 @@ public class HistoryScreen extends ScrollableSettingsScreen {
         int cx = this.width / 2;
         int w = Math.min(330, this.width - 30);
         int left = cx - w / 2;
-        int y = 8;
+        // 内容起始 y=2：标题贴屏幕顶部，去掉原来的顶部留白（行距保持不变）
+        int y = 2;
 
         addRenderableWidget(new GuiTextLabel(cx, ry(y), w, 12,
-                screenId == null
-                        ? "§e播放历史（服务器）→ 向所有屏幕发送播放申请"
-                        : "§e播放历史（服务器，显示谁在何时播放）",
-                GuiTextLabel.Align.CENTER, GuiTextLabel.YELLOW));
+                headerText(), GuiTextLabel.Align.CENTER, GuiTextLabel.YELLOW));
         y += 15;
 
         searchBox = new EditBox(this.font, left, ry(y), w - 62, 20,
@@ -104,6 +129,45 @@ public class HistoryScreen extends ScrollableSettingsScreen {
         List<PlayLogPayload.Entry> all = new ArrayList<>(PlayLogClient.entries());
         all.sort((a, b) -> Long.compare(b.timeMs(), a.timeMs()));
         List<PlayLogPayload.Entry> filtered = filter(all);
+
+        if (isGroupHome()) {
+            // ── 全局主页：按玩家分组，一行一个玩家（玩家名 + 历史 N 条），点玩家行进入其明细 ──
+            List<PlayerGroup> groups = groupByPlayer(filtered);
+            int totalPages = Math.max(1, (groups.size() + PAGE_SIZE - 1) / PAGE_SIZE);
+            if (page >= totalPages) page = totalPages - 1;
+            int start = page * PAGE_SIZE;
+            int end = Math.min(groups.size(), start + PAGE_SIZE);
+
+            if (groups.isEmpty()) {
+                addRenderableWidget(new GuiTextLabel(cx, ry(y), w, 12,
+                        "§7暂无播放记录（播放过的视频与链接会出现在这里）",
+                        GuiTextLabel.Align.CENTER, GuiTextLabel.YELLOW));
+                y += 22;
+            } else {
+                for (int i = start; i < end; i++) {
+                    PlayerGroup g = groups.get(i);
+                    String label = UiText.fit(
+                            "§b" + g.label() + "  §7历史 " + g.entries().size() + " 条", w - 10);
+                    addRenderableWidget(Button.builder(Component.literal(label),
+                            btn -> openChild(HistoryScreen.forPlayer(g.key(), g.label())))
+                            .bounds(left, ry(y), w, 20).build());
+                    y += 22;
+                }
+                y += 2;
+            }
+            buildFooter(left, w, totalPages);
+            finishContent(this.height - 6);
+            return;
+        }
+
+        // ── 明细页：全局（可带玩家过滤）或该屏（screenId != null）──
+        if (playerKey != null) {
+            List<PlayLogPayload.Entry> mine = new ArrayList<>();
+            for (PlayLogPayload.Entry e : filtered) {
+                if (playerKeyOf(e).equals(playerKey)) mine.add(e);
+            }
+            filtered = mine;
+        }
         int totalPages = Math.max(1, (filtered.size() + PAGE_SIZE - 1) / PAGE_SIZE);
         if (page >= totalPages) page = totalPages - 1;
         int start = page * PAGE_SIZE;
@@ -111,7 +175,8 @@ public class HistoryScreen extends ScrollableSettingsScreen {
 
         if (filtered.isEmpty()) {
             addRenderableWidget(new GuiTextLabel(cx, ry(y), w, 12,
-                    "§7暂无播放记录（播放过的视频与链接会出现在这里）",
+                    playerKey != null
+                            ? "§7该玩家暂无播放记录" : "§7暂无播放记录（播放过的视频与链接会出现在这里）",
                     GuiTextLabel.Align.CENTER, GuiTextLabel.YELLOW));
             y += 22;
         } else {
@@ -120,17 +185,36 @@ public class HistoryScreen extends ScrollableSettingsScreen {
             }
         }
 
-        // ── 底部固定操作区（不随内容滚动，分页样式与本地视频库一致） ──
+        buildFooter(left, w, totalPages);
+        finishContent(this.height - 6);
+    }
+
+    /** 标题文案：该屏 / 玩家明细 / 玩家分组主页（仅展示，行为不变）。 */
+    private String headerText() {
+        if (screenId != null) {
+            return "§e播放历史（服务器，显示谁在何时播放）";
+        }
+        if (playerKey != null) {
+            return "§e播放历史：" + playerLabel + " → 向所有屏幕发送播放申请";
+        }
+        return "§e播放历史（服务器，按玩家分组）→ 向所有屏幕发送播放申请";
+    }
+
+    /**
+     * 底部固定操作区（不随内容滚动，分页样式与本地视频库一致）：
+     * 清空全部（两次点击确认） + 分页 + 返回上一级。
+     */
+    private void buildFooter(int left, int w, int totalPages) {
         int bottom = this.height - 32 + scrollY;      // 固定到屏幕底部上方
         addRenderableWidget(Button.builder(
                 Component.literal(CLEAR_KEY.equals(pendingDelete)
-                        ? "§c⚠确认清空我的历史?" : "🗑 清空我的历史"),
+                        ? "§c⚠确认清空全部?" : "🗑 清空全部"),
                 btn -> {
                     // 清空记录：两次点击确认（与本地视频库删除同一套机制）
                     if (!CLEAR_KEY.equals(pendingDelete)) {
                         pendingDelete = CLEAR_KEY;
                         Minecraft.getInstance().player.sendSystemMessage(Component.literal(
-                                "§c[CinemaForYou] 将清空我的全部播放历史（不可恢复），再点一次确认"));
+                                "§c[CinemaForYou] 将清空你的全部播放历史（不可恢复），再点一次确认"));
                         rebuildWidgets();
                         return;
                     }
@@ -147,8 +231,37 @@ public class HistoryScreen extends ScrollableSettingsScreen {
                 () -> { page = Math.min(tPages - 1, page + 1); rebuildWidgets(); });
         addRenderableWidget(Button.builder(Component.literal("← 返回上一级"),
                 btn -> onClose()).bounds(left + 140, bottom, Math.max(60, w - 140), 20).build());
+    }
 
-        finishContent(this.height - 6);
+    /** 玩家分组：key = 玩家键，label = 显示名，entries = 该玩家的历史条目。 */
+    private record PlayerGroup(String key, String label, List<PlayLogPayload.Entry> entries) {}
+
+    /** 按玩家分组（搜索过滤后的历史），组按玩家名排序。 */
+    private static List<PlayerGroup> groupByPlayer(List<PlayLogPayload.Entry> entries) {
+        Map<String, List<PlayLogPayload.Entry>> map = new LinkedHashMap<>();
+        for (PlayLogPayload.Entry e : entries) {
+            map.computeIfAbsent(playerKeyOf(e), k -> new ArrayList<>()).add(e);
+        }
+        List<PlayerGroup> out = new ArrayList<>();
+        for (Map.Entry<String, List<PlayLogPayload.Entry>> e : map.entrySet()) {
+            out.add(new PlayerGroup(e.getKey(), playerLabelOf(e.getValue().get(0)), e.getValue()));
+        }
+        out.sort((a, b) -> a.label().compareToIgnoreCase(b.label()));
+        return out;
+    }
+
+    /** 玩家分组键：优先 playerUuid；无 uuid 时按名字归组；都没有则 ""（未知玩家）。 */
+    private static String playerKeyOf(PlayLogPayload.Entry e) {
+        String uuid = e.playerUuid();
+        if (uuid != null && !uuid.isEmpty()) return uuid;
+        String name = e.playerName();
+        return (name == null || name.isEmpty()) ? "" : "name:" + name;
+    }
+
+    /** 玩家显示名（缺失为"未知玩家"）。 */
+    private static String playerLabelOf(PlayLogPayload.Entry e) {
+        String name = e.playerName();
+        return (name == null || name.isEmpty()) ? "未知玩家" : name;
     }
 
     private int renderEntry(int cx, int left, int w, int y, PlayLogPayload.Entry e) {

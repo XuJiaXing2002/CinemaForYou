@@ -11,6 +11,7 @@ import com.cinemaforyou.network.ScreenSyncPayload;
 import com.cinemaforyou.network.UpdateScreenSettingsPayload;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 
 /**
@@ -60,6 +61,21 @@ public final class ClientNetworkHandlers {
         ClientPlayNetworking.registerGlobalReceiver(com.cinemaforyou.network.ScreenQueuePayload.TYPE,
                 (payload, context) -> context.client().execute(() ->
                         QueueClient.accept(payload.entries())));
+
+        // 本地上传到服务器媒体库的状态回执（READY/SUCCESS/ERROR/CANCELLED）
+        ClientPlayNetworking.registerGlobalReceiver(
+                com.cinemaforyou.network.MediaUploadStatusPayload.TYPE,
+                (payload, context) -> context.client().execute(() ->
+                        MediaUploader.acceptStatus(payload.uploadId(), payload.status(),
+                                payload.fileName(), payload.message())));
+
+        // 上传分块发送驱动：客户端 tick 内持续推进（上传与界面是否打开无关）
+        net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.END_CLIENT_TICK
+                .register(client -> MediaUploader.tick());
+
+        // 断线：放弃本地上传状态（服务端随 DISCONNECT 清理未完成的临时分块）
+        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) ->
+                MediaUploader.reset());
     }
 
     /** 向服务端请求"服务器媒体库"文件列表。 */
@@ -186,5 +202,29 @@ public final class ClientNetworkHandlers {
     /** 上传旧版本机队列（首次同步时一次性迁移）。 */
     public static void sendQueueUpload(java.util.List<com.cinemaforyou.network.QueueEntry> entries) {
         ClientPlayNetworking.send(new com.cinemaforyou.network.QueueUploadPayload(entries));
+    }
+
+    // ───────────── 本地视频上传到服务器媒体库（分块传输） ─────────────
+
+    /** 开始上传：文件名 + 总大小（服务端校验权限/格式/重名后回 READY）。 */
+    public static void sendMediaUploadStart(int uploadId, String fileName, long fileSize) {
+        ClientPlayNetworking.send(new com.cinemaforyou.network.MediaUploadStartPayload(
+                uploadId, fileName, fileSize));
+    }
+
+    /** 发送一个分块（约 256KB；由 MediaUploader 每 tick 按预算调用）。 */
+    public static void sendMediaUploadChunk(int uploadId, byte[] data) {
+        ClientPlayNetworking.send(new com.cinemaforyou.network.MediaUploadChunkPayload(
+                uploadId, data));
+    }
+
+    /** 全部分块发完：请服务端校验并落盘。 */
+    public static void sendMediaUploadFinish(int uploadId) {
+        ClientPlayNetworking.send(new com.cinemaforyou.network.MediaUploadFinishPayload(uploadId));
+    }
+
+    /** 取消上传：服务端删除临时分块文件。 */
+    public static void sendMediaUploadCancel(int uploadId) {
+        ClientPlayNetworking.send(new com.cinemaforyou.network.MediaUploadCancelPayload(uploadId));
     }
 }

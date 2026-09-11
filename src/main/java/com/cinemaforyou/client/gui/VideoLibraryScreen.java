@@ -70,15 +70,16 @@ public class VideoLibraryScreen extends Screen {
         clearWidgets();
         int cx = this.width / 2;
 
-        addRenderableWidget(Button.builder(
-                Component.literal(screenId == null
-                        ? "§e📂 本地视频库 → 向所有屏幕发送播放申请"
-                        : "§e📂 本地视频库 → 播放到屏幕"),
-                btn -> {}
-        ).bounds(cx - 155, 20, 310, 16).build()).active = false;
+        // 顶部标题：统一为黄色文字标题（原灰色不可点击按钮框已替换，行位/行高不变）；
+        // 整体上移贴顶（原 y=24 → 2），下方搜索框/列表随之上移，行距不变
+        addRenderableWidget(new GuiTextLabel(cx, 2, 310, 12,
+                screenId == null
+                        ? "📂 本地视频库 → 向所有屏幕发送播放申请"
+                        : "📂 本地视频库 → 播放到屏幕",
+                GuiTextLabel.Align.CENTER, GuiTextLabel.YELLOW));
 
         // 搜索框
-        searchBox = new EditBox(this.font, cx - 155, 44, 248, 20,
+        searchBox = new EditBox(this.font, cx - 155, 17, 248, 20,
                 Component.literal("搜索文件名"));
         searchBox.setValue(query);
         addRenderableWidget(searchBox);
@@ -88,7 +89,7 @@ public class VideoLibraryScreen extends Screen {
                     page = 0;
                     rebuildWidgets();
                 }
-        ).bounds(cx + 97, 44, 58, 20).build());
+        ).bounds(cx + 97, 17, 58, 20).build());
 
         List<File> shown = new ArrayList<>();
         for (File f : files) {
@@ -97,24 +98,26 @@ public class VideoLibraryScreen extends Screen {
             }
         }
 
+        // 列表起始 y：搜索框（17..37）下方统一留 4px，与其它搜索页一致
+        final int listTop = 41;
         if (files.isEmpty()) {
             Button empty = Button.builder(
-                    Component.literal("§c无媒体文件 - 请放入 游戏目录/cinema/videos/"),
+                    Component.literal("§c无媒体文件：请放入 游戏目录/cinema/videos/"),
                     btn -> {}
-            ).bounds(cx - 155, 72, 310, 20).build();
+            ).bounds(cx - 155, listTop, 310, 20).build();
             addRenderableWidget(empty);
         } else if (shown.isEmpty()) {
             Button empty = Button.builder(
                     Component.literal("§7没有匹配「" + query + "」的文件"),
                     btn -> {}
-            ).bounds(cx - 155, 72, 310, 20).build();
+            ).bounds(cx - 155, listTop, 310, 20).build();
             addRenderableWidget(empty);
         } else {
             int maxPage = (shown.size() - 1) / ROWS_PER_PAGE;
             page = Math.min(page, maxPage);
             int start = page * ROWS_PER_PAGE;
             int end = Math.min(shown.size(), start + ROWS_PER_PAGE);
-            int y = 72;
+            int y = listTop;
             for (int i = start; i < end; i++) {
                 File f = shown.get(i);
                 String url = "file:" + f.getAbsolutePath().replace('\\', '/');

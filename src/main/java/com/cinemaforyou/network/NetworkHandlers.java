@@ -3,6 +3,7 @@ package com.cinemaforyou.network;
 import com.cinemaforyou.CinemaForYou;
 import com.cinemaforyou.config.ServerConfig;
 import com.cinemaforyou.data.CinemaScreen;
+import com.cinemaforyou.manager.MediaUploadManager;
 import com.cinemaforyou.manager.ScreenManager;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
@@ -45,6 +46,8 @@ public final class NetworkHandlers {
         PayloadTypeRegistry.clientboundPlay().register(PlayLogPayload.TYPE, PlayLogPayload.STREAM_CODEC);
         PayloadTypeRegistry.clientboundPlay().register(MediaMetaPayload.TYPE, MediaMetaPayload.STREAM_CODEC);
         PayloadTypeRegistry.clientboundPlay().register(ScreenQueuePayload.TYPE, ScreenQueuePayload.STREAM_CODEC);
+        PayloadTypeRegistry.clientboundPlay().register(
+                MediaUploadStatusPayload.TYPE, MediaUploadStatusPayload.STREAM_CODEC);
 
         // C2S（客户端发 → 服务端收）
         PayloadTypeRegistry.serverboundPlay().register(ScreenActionPayload.TYPE, ScreenActionPayload.STREAM_CODEC);
@@ -71,6 +74,18 @@ public final class NetworkHandlers {
                 ScreenQueueActionPayload.TYPE, ScreenQueueActionPayload.STREAM_CODEC);
         PayloadTypeRegistry.serverboundPlay().register(
                 QueueUploadPayload.TYPE, QueueUploadPayload.STREAM_CODEC);
+        // 本地上传到服务器媒体库（分块传输：开始 / 分块 / 结束 / 取消）
+        PayloadTypeRegistry.serverboundPlay().register(
+                MediaUploadStartPayload.TYPE, MediaUploadStartPayload.STREAM_CODEC);
+        // 分块包单包约 256KB，远超原版 32767 字节上限：必须 registerLarge
+        // 交给 Fabric 自动拆包/合包，否则发送大块会直接断开连接
+        PayloadTypeRegistry.serverboundPlay().registerLarge(
+                MediaUploadChunkPayload.TYPE, MediaUploadChunkPayload.STREAM_CODEC,
+                MediaUploadChunkPayload.MAX_WIRE_BYTES);
+        PayloadTypeRegistry.serverboundPlay().register(
+                MediaUploadFinishPayload.TYPE, MediaUploadFinishPayload.STREAM_CODEC);
+        PayloadTypeRegistry.serverboundPlay().register(
+                MediaUploadCancelPayload.TYPE, MediaUploadCancelPayload.STREAM_CODEC);
 
         // 注册服务端 C2S 接收器
         registerServerReceivers();
@@ -356,6 +371,48 @@ public final class NetworkHandlers {
                         mgr.queueUpload(player, payload.entries());
                     });
                 });
+
+        // ───────────── 本地视频上传到服务器媒体库（分块传输，仅 OP≥2） ─────────────
+
+        // MediaUploadStartPayload：开始上传（校验权限/扩展名/重名，回 READY + 最终文件名）
+        ServerPlayNetworking.registerGlobalReceiver(MediaUploadStartPayload.TYPE,
+                (payload, context) -> {
+                    ServerPlayer player = context.player();
+                    MinecraftServer server = context.server();
+                    server.execute(() -> MediaUploadManager.handleStart(
+                            player, payload.uploadId(), payload.fileName(), payload.fileSize()));
+                });
+
+        // MediaUploadChunkPayload：单个分块数据（追加写入临时文件，绝不整文件单包）
+        ServerPlayNetworking.registerGlobalReceiver(MediaUploadChunkPayload.TYPE,
+                (payload, context) -> {
+                    ServerPlayer player = context.player();
+                    MinecraftServer server = context.server();
+                    server.execute(() -> MediaUploadManager.handleChunk(
+                            player, payload.uploadId(), payload.data()));
+                });
+
+        // MediaUploadFinishPayload：分块发完（校验字节数一致后落盘进媒体目录）
+        ServerPlayNetworking.registerGlobalReceiver(MediaUploadFinishPayload.TYPE,
+                (payload, context) -> {
+                    ServerPlayer player = context.player();
+                    MinecraftServer server = context.server();
+                    server.execute(() -> MediaUploadManager.handleFinish(
+                            player, payload.uploadId()));
+                });
+
+        // MediaUploadCancelPayload：取消上传（删除临时分块文件）
+        ServerPlayNetworking.registerGlobalReceiver(MediaUploadCancelPayload.TYPE,
+                (payload, context) -> {
+                    ServerPlayer player = context.player();
+                    MinecraftServer server = context.server();
+                    server.execute(() -> MediaUploadManager.handleCancel(
+                            player, payload.uploadId()));
+                });
+
+        // 玩家断线：丢弃未完成的上传会话（清理临时分块文件与重名占位）
+        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) ->
+                MediaUploadManager.onPlayerDisconnect(handler.getPlayer().getUUID()));
     }
 
     /** 处理客户端发来的队列操作请求。 */
@@ -417,6 +474,12 @@ public final class NetworkHandlers {
         // 权限校验：屏幕 owner 或 op2(GAMEMASTERS) 可控制
         CinemaScreen screen = mgr.get(id);
         if (screen != null && !canControl(screen, player)) {
+            // 播放类改为申请制：对没有控制权的屏幕发起播放不再直接拒绝，
+            // 而是向该屏 owner 发送同款播放申请（owner 接受后才播放）
+            if (payload.action() == ScreenActionPayload.Action.PLAY) {
+                mgr.requestPlayOnScreen(id, payload.sourceUrl(), -1, player);
+                return;
+            }
             // 失败上报无权限时静默忽略，避免骚扰非 owner 观看者
             if (payload.action() == ScreenActionPayload.Action.REPORT_ERROR) return;
             player.sendSystemMessage(Component.literal(

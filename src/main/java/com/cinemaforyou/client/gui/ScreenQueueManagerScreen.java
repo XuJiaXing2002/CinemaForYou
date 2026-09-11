@@ -4,12 +4,14 @@ import com.cinemaforyou.client.ClientScreenManager;
 import com.cinemaforyou.client.config.ClientConfig;
 import com.cinemaforyou.client.network.ClientNetworkHandlers;
 import com.cinemaforyou.client.network.QueueClient;
+import com.cinemaforyou.client.network.ScreenAdminClient;
 import com.cinemaforyou.client.video.VideoTitleResolver;
 import com.cinemaforyou.data.CinemaScreen;
 import com.cinemaforyou.network.QueueEntry;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 
@@ -17,25 +19,33 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
  * 播放队列管理（服务端队列的客户端只读镜像 + 操作入口）。
  *
- * <p>两种范围（同一界面类，传入不同范围即可）：
+ * <p>顶部统一标题行「播放队列 → 向所有屏幕发送播放申请」（与原来一致：黄色文字、无按钮；
+ * 原独立的「向所有屏幕发送播放申请」区块标题行与「全局列表为空」空状态行已按要求合并/删除）。
+ * 标题下方为搜索框（沿用 {@link TargetSearchScreen} 的实现风格与位置），
+ * 过滤当前层级的列表：玩家名 / 屏幕名 / 队列视频标题。
+ *
+ * <p>两种入口共五种视图：
  * <ul>
- *   <li>无参构造：总设置的「全局播放队列管理」入口——上下两个区块：
- *       <b>区块 A</b> 为全局播放队列（原样保留：条目<b>不参与任何屏幕的自动连播</b>，
- *       管理员手动点击某条才向所有屏幕的 owner 发送播放申请，两次点击确认）；
- *       <b>区块 B</b> 为「各屏幕队列（汇总）」——按客户端已知屏幕分组只读展示每屏队列
- *       （空队列也显示组头），点条目同样走"向所有屏幕发播放申请"流程（<b>不</b>直接在该屏播放），
- *       并保留删除/清空/上移下移（作用于该屏队列，删除/清空沿用两次点击确认）；</li>
- *   <li>{@link #ScreenQueueManagerScreen(UUID)}：屏幕控制页入口——只展示该屏队列，
- *       点条目 = 从该屏队列立即播放，顺序仍决定"播完行为=自动播放下一个"的次序（原行为不变）。</li>
+ *   <li>总设置入口 {@link #ScreenQueueManagerScreen()} ＝三级：
+ *       <b>主页</b>一行一个玩家（玩家名 + 屏幕数 + 队列数），最上方固定一行
+ *       「🎬 全局播放队列（N 首）」入口；点玩家 → 该玩家的屏幕列表 {@link #forPlayer}，
+ *       点屏幕 → 该屏队列明细 {@link #ScreenQueueManagerScreen(UUID)}（点条目 = 从该屏队列立即播放）；
+ *       点「全局播放队列」行 → 全局专用队列明细 {@link #forGlobalQueue()}
+ *       （原区块 A：管理员手动点条目，两次点击确认后向所有屏幕的 owner 发送播放申请）；</li>
+ *   <li>屏幕控制入口 {@link #forScreenList()} ＝两级：主页即全部屏幕列表（不显示玩家层级），
+ *       点屏幕 → 该屏队列明细。</li>
  * </ul>
  *
- * <p>删除/清空/上移下移都发到服务端执行（服务端为唯一数据源：屏幕队列 owner 或 OP≥2 可操作，
+ * <p>队列明细沿用原渲染与按钮（▲▼ 调序、✕ 删除、点条目名播放/发申请），
+ * 删除/清空/上移下移都发到服务端执行（服务端为唯一数据源：屏幕队列 owner 或 OP≥2 可操作，
  * 全局队列仅 OP≥2），删除与清空沿用两次点击确认。
  */
 public class ScreenQueueManagerScreen extends Screen {
@@ -46,72 +56,138 @@ public class ScreenQueueManagerScreen extends Screen {
         }
     }
 
-    private static final int ROWS_PER_PAGE = 8;
+    /** 每页行数（顶部新增搜索框后由 8 调整为 7，分页机制不变）。 */
+    private static final int ROWS_PER_PAGE = 7;
+    /** 列表起始 y：标题（2..14）+ 搜索框（17..37）之后，与 TargetSearchScreen 的布局一致。 */
+    private static final int ROWS_TOP = 41;
+    /** 顶部统一标题行文案（黄色文字、无按钮）。 */
+    private static final String TITLE_TEXT = "播放队列 → 向所有屏幕发送播放申请";
     /** 队列条目"加入时间"显示格式（与播放历史一致）。 */
     private static final DateTimeFormatter QUEUE_TIME_FMT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
-    /** 目标屏幕；null = 总设置入口（区块 A 全局播放队列 + 区块 B 各屏幕队列汇总）。 */
+    /** 界面视图（两种入口的层级由它区分）。 */
+    private enum View {
+        /** 总设置入口主页：玩家列表 + 全局专用队列入口行。 */
+        HOME,
+        /** 总设置入口第二级：某玩家的屏幕列表。 */
+        PLAYER_SCREENS,
+        /** 屏幕控制入口第一级：全部屏幕列表（不显示玩家层级）。 */
+        SCREEN_LIST,
+        /** 某屏队列明细（总设置入口第三级 / 屏幕控制入口第二级）。 */
+        SCREEN_DETAIL,
+        /** 全局专用队列明细（原区块 A）。 */
+        GLOBAL_DETAIL
+    }
+
+    private final View view;
+    /** SCREEN_DETAIL：目标屏幕；其它视图为 null。 */
     private final UUID screenId;
+    /** PLAYER_SCREENS：玩家分组键（屏幕 ownerId；"" = "未知玩家"）与显示名。 */
+    private final String ownerKey;
+    private final String ownerLabel;
+
+    /** 当前层级的搜索关键字（按玩家名/屏幕名/视频标题过滤）。 */
+    private String query = "";
+    private EditBox searchBox;
     private int page = 0;
     /** 二次确认状态（与本地视频库一致的机制）：待删除条目键（"屏幕UUID#下标" / "global#下标"）。 */
     private String pendingRemoveKey = null;
     /** 二次确认状态：待清空队列的屏幕 UUID 字符串。 */
     private String pendingClearScreenId = null;
-    /** 二次确认状态：全局播放队列待清空。 */
+    /** 二次确认状态：全局专用队列待清空。 */
     private boolean pendingClearGlobal = false;
-    /** 区块 A 二次确认：待确认"向所有屏幕发播放申请"的全局条目 URL。 */
+    /** 全局专用队列二次确认：待确认"向所有屏幕发播放申请"的条目 URL。 */
     private String pendingGlobalPlayUrl = null;
-    /** 区块 B 二次确认：待确认"向所有屏幕发播放申请"的屏幕条目键（"屏幕UUID#下标"）。 */
-    private String pendingApplyKey = null;
 
-    /** 列表行类型：区块 A 全局条目/空提示、区块 B 标题/组头/条目、无屏幕提示。 */
-    private enum RowKind { GLOBAL_ENTRY, GLOBAL_EMPTY, SECTION_TITLE, SCREEN_HEADER, SCREEN_ENTRY, NO_SCREEN }
+    /** 列表行类型：玩家分组/表头、全局专用队列入口/表头、屏幕汇总行/组头、条目行。 */
+    private enum RowKind {
+        PLAYER_GROUP, PLAYER_HEADER, GLOBAL_QUEUE_LINK, GLOBAL_HEADER,
+        SCREEN_SUMMARY, SCREEN_HEADER, SCREEN_ENTRY, GLOBAL_ENTRY
+    }
 
-    /** 列表行：组头行（screen != null）或条目行（entryScreen + entryIndex；全局条目 entryScreen 为 null）。 */
-    private record Row(RowKind kind, CinemaScreen screen, UUID entryScreen, int entryIndex) {
-        /** 区块 A 全局播放队列条目。 */
-        static Row globalEntry(int index) {
-            return new Row(RowKind.GLOBAL_ENTRY, null, null, index);
+    /** 列表行：玩家分组行 / 全局专用队列入口行 / 屏幕行 / 组头行 / 条目行。 */
+    private record Row(RowKind kind, PlayerGroup group, CinemaScreen screen,
+                       UUID entryScreen, int entryIndex) {
+        /** 全局专用队列入口（一行汇总）。 */
+        static Row globalQueueLink() {
+            return new Row(RowKind.GLOBAL_QUEUE_LINK, null, null, null, -1);
         }
 
-        /** 某屏队列条目。 */
-        static Row screenEntry(UUID screenId, int index) {
-            return new Row(RowKind.SCREEN_ENTRY, null, screenId, index);
+        /** 主页：一行一个玩家。 */
+        static Row playerGroup(PlayerGroup g) {
+            return new Row(RowKind.PLAYER_GROUP, g, null, null, -1);
         }
 
-        /** 某屏组头（列表从属该屏的条目均排在组头之后）。 */
+        /** 某玩家屏幕列表页的黄色表头。 */
+        static Row playerHeader(PlayerGroup g) {
+            return new Row(RowKind.PLAYER_HEADER, g, null, null, -1);
+        }
+
+        /** 全局专用队列明细页的黄色表头。 */
+        static Row globalHeader() {
+            return new Row(RowKind.GLOBAL_HEADER, null, null, null, -1);
+        }
+
+        /** 屏幕列表页：一行一个屏幕（点击进入该屏队列明细）。 */
+        static Row screenSummary(CinemaScreen s) {
+            return new Row(RowKind.SCREEN_SUMMARY, null, s, null, -1);
+        }
+
+        /** 单屏明细页组头。 */
         static Row screenHeader(CinemaScreen s) {
-            return new Row(RowKind.SCREEN_HEADER, s, null, -1);
+            return new Row(RowKind.SCREEN_HEADER, null, s, null, -1);
         }
 
-        /** 无附加数据的行（区块标题/提示行）。 */
-        static Row of(RowKind kind) {
-            return new Row(kind, null, null, -1);
+        /** 某屏队列条目（entryScreen = 该屏 UUID）。 */
+        static Row screenEntry(UUID screenId, int index) {
+            return new Row(RowKind.SCREEN_ENTRY, null, null, screenId, index);
+        }
+
+        /** 全局专用队列条目（entryScreen 为 null）。 */
+        static Row globalEntry(int index) {
+            return new Row(RowKind.GLOBAL_ENTRY, null, null, null, index);
         }
     }
 
-    /** 总设置入口（区块 A 全局播放队列 + 区块 B 各屏幕队列汇总）。 */
+    /** 总设置入口：全局播放队列主页（玩家列表 + 全局专用队列入口行）。 */
     public ScreenQueueManagerScreen() {
-        this(null);
+        this(View.HOME, null, null, null);
     }
 
-    /**
-     * @param screenId 只管理该屏队列（点条目=该屏播放）；null = 总设置入口
-     *                 （区块 A 点条目=向所有屏幕发播放申请；区块 B 始终走申请流程）
-     */
+    /** @param screenId 只管理该屏队列的明细页（点条目 = 从该屏队列立即播放） */
     public ScreenQueueManagerScreen(UUID screenId) {
-        super(Component.literal(screenId == null ? "全局播放队列管理" : "播放队列"));
-        this.screenId = screenId;
+        this(View.SCREEN_DETAIL, screenId, null, null);
     }
 
-    /** 是否全局播放队列视图（总设置入口）。 */
-    private boolean isGlobalView() {
-        return screenId == null;
+    private ScreenQueueManagerScreen(View view, UUID screenId, String ownerKey, String ownerLabel) {
+        // 标题统一：「播放队列」——总设置入口 / 屏幕控制入口 / 各级明细页一致
+        super(Component.literal("播放队列"));
+        this.view = view;
+        this.screenId = screenId;
+        this.ownerKey = ownerKey;
+        this.ownerLabel = ownerLabel;
+    }
+
+    /** 总设置入口第二级：某玩家的屏幕列表（点屏幕 → 该屏队列明细）。 */
+    public static ScreenQueueManagerScreen forPlayer(String ownerKey, String ownerLabel) {
+        return new ScreenQueueManagerScreen(View.PLAYER_SCREENS, null, ownerKey, ownerLabel);
+    }
+
+    /** 屏幕控制入口第一级：全部屏幕列表（不显示玩家层级；点屏幕 → 该屏队列明细）。 */
+    public static ScreenQueueManagerScreen forScreenList() {
+        return new ScreenQueueManagerScreen(View.SCREEN_LIST, null, null, null);
+    }
+
+    /** 全局专用队列明细（原区块 A：点条目两次确认后向所有屏幕发播放申请）。 */
+    public static ScreenQueueManagerScreen forGlobalQueue() {
+        return new ScreenQueueManagerScreen(View.GLOBAL_DETAIL, null, null, null);
     }
 
     @Override
     protected void init() {
+        // 玩家分组显示名来自屏幕元数据（ownerName）；到达后由监听器重建界面
+        ClientNetworkHandlers.requestScreenMeta();
         rebuildWidgets();
     }
 
@@ -122,49 +198,59 @@ public class ScreenQueueManagerScreen extends Screen {
         QueueClient.setListener(() -> Minecraft.getInstance().execute(this::rebuildWidgets));
         VideoTitleResolver.setListener(() ->
                 Minecraft.getInstance().execute(this::rebuildWidgets));
+        // 屏幕元数据（玩家显示名）到达后刷新玩家分组
+        ScreenAdminClient.setListener(() ->
+                Minecraft.getInstance().execute(this::rebuildWidgets));
 
         int cx = this.width / 2;
         int w = Math.min(320, this.width - 30);
         int left = cx - w / 2;
-        // 标题计数（与原来一致）：总设置入口只计区块 A 的全局条目；单屏视图计该屏条目
-        int entries = isGlobalView() ? QueueClient.globalCount() : QueueClient.countFor(screenId);
         List<Row> rows = buildRows();
 
-        addRenderableWidget(Button.builder(
-                Component.literal(isGlobalView()
-                        ? "§e📋 全局播放队列（共 " + entries
-                                + " 首）— 点条目向所有屏幕发播放申请（不参与自动连播）"
-                        : "§e📋 播放队列（" + entries + " 首）— 播完=自动播放下一个时按此顺序循环"),
-                btn -> {}
-        ).bounds(left, 12, w, 16).build());
+        // 顶部标题行：整体黄色文字标题（GuiTextLabel，无按钮/灰框），贴屏幕顶部；
+        // 「播放队列 → 向所有屏幕发送播放申请」——原独立区块标题行已合并到这里
+        addRenderableWidget(new GuiTextLabel(cx, 2, w, 12,
+                TITLE_TEXT,
+                GuiTextLabel.Align.CENTER, GuiTextLabel.YELLOW));
+
+        // 搜索框（与 TargetSearchScreen 同一套实现/位置）：过滤当前层级的列表
+        searchBox = new EditBox(this.font, left, 17, w - 62, 20,
+                Component.literal("搜索"));
+        searchBox.setValue(query);
+        addRenderableWidget(searchBox);
+        addRenderableWidget(Button.builder(Component.literal("🔍"),
+                btn -> {
+                    query = searchBox.getValue() == null ? "" : searchBox.getValue().trim();
+                    page = 0;
+                    rebuildWidgets();
+                }
+        ).bounds(left + w - 58, 17, 58, 20).build());
 
         if (rows.isEmpty()) {
-            // 单屏视图的空状态（总设置入口的区块 A/B 提示行已在 buildRows 里放入）
-            CinemaScreen only = ClientScreenManager.get().getScreen(screenId);
-            String hint = only == null
-                    ? "§7屏幕不存在（可能已被删除）"
-                    : "§7「" + only.displayName()
-                            + "」队列为空 - 在「📂 本地视频」或「🕘 历史」里点 ＋队列 添加";
-            addRenderableWidget(Button.builder(Component.literal(hint), btn -> {})
-                    .bounds(left, 36, w, 20).build());
+            // 空状态提示（全局专用队列明细已按要求不再显示空状态行，此处返回 null）
+            String hint = emptyHint();
+            if (hint != null) {
+                addRenderableWidget(Button.builder(Component.literal(hint), btn -> {})
+                        .bounds(left, ROWS_TOP, w, 20).build());
+            }
         } else {
             int maxPage = (rows.size() - 1) / ROWS_PER_PAGE;
             page = Math.min(page, maxPage);
             int start = page * ROWS_PER_PAGE;
             int end = Math.min(rows.size(), start + ROWS_PER_PAGE);
-            int y = 36;
+            int y = ROWS_TOP;
             for (int r = start; r < end; r++) {
                 y = renderRow(rows.get(r), left, w, y);
             }
 
-            // 底部固定"清空队列"（两次点击确认）：全局视图清全局队列，单屏视图清该屏队列
-            if (isGlobalView()) {
+            // 底部固定"清空队列"（两次点击确认）：全局专用队列明细清全局队列，单屏明细清该屏队列
+            if (view == View.GLOBAL_DETAIL) {
                 addRenderableWidget(Button.builder(
                         Component.literal(pendingClearGlobal ? "§c⚠确认清空全局队列?" : "🗑 清空全局队列"),
                         btn -> clearGlobalQueue()
                 ).bounds(left, this.height - 56, w, 20).build());
-            } else if (ClientScreenManager.get().getScreen(screenId) != null) {
-                CinemaScreen s = ClientScreenManager.get().getScreen(screenId);
+            } else if (view == View.SCREEN_DETAIL && targetScreen() != null) {
+                CinemaScreen s = targetScreen();
                 addRenderableWidget(Button.builder(
                         Component.literal(pendingClearScreenId != null
                                 ? "§c⚠确认清空队列?" : "🗑 清空队列"),
@@ -200,62 +286,103 @@ public class ScreenQueueManagerScreen extends Screen {
         ).bounds(left + 140, this.height - 30, Math.max(60, w - 140), 20).build());
     }
 
-    /** 渲染一行（区块标题/组头/提示/条目），返回下一行的 y。 */
+    /** 当前层级的空状态提示（无提示返回 null）。 */
+    private String emptyHint() {
+        boolean searching = !normalizedQuery().isEmpty();
+        if (view == View.SCREEN_DETAIL) {
+            if (searching) return "§7没有匹配的队列条目";
+            CinemaScreen s = targetScreen();
+            return s == null
+                    ? "§7屏幕不存在（可能已被删除）"
+                    : "§7「" + s.displayName()
+                            + "」队列为空：在「📂 本地视频」或「🕘 历史」里点 ＋队列 添加";
+        }
+        if (view == View.GLOBAL_DETAIL) {
+            // 全局专用队列的空状态行已按要求删除：仅在搜索无结果时提示
+            return searching ? "§7没有匹配的队列条目" : null;
+        }
+        return searching ? "§7没有匹配的屏幕" : "§7暂无已知屏幕（创建屏幕后可在此查看各屏队列）";
+    }
+
+    /** 渲染一行（入口/表头/组头/提示/条目），返回下一行的 y。 */
     private int renderRow(Row row, int left, int w, int y) {
         switch (row.kind()) {
-            case SECTION_TITLE -> {
-                // 区块 B 标题：各屏幕队列汇总（位于区块 A 全局队列下方）
-                Button title = Button.builder(
-                        Component.literal("§7—— 各屏幕队列（汇总） ——"), btn -> {})
-                        .bounds(left, y, w, 20).build();
-                title.active = false;
-                addRenderableWidget(title);
-                return y + 22;
-            }
-            case GLOBAL_EMPTY -> {
-                // 区块 A 空提示（文案与原全局视图一致）
-                addRenderableWidget(Button.builder(
-                        Component.literal("§7全局播放队列为空 - 在总设置的「📂 本地视频」「🕘 播放历史」"
-                                + "「🖥 服务器媒体库」里点 ＋队列 添加"), btn -> {})
+            case GLOBAL_QUEUE_LINK -> {
+                // 全局专用队列入口（原区块 A）：一行汇总 + 数量；点进去是该队列明细，
+                // 明细管理与"点条目→两次确认→向所有屏幕发申请"逻辑保持现状。
+                // 该行固定在主页最上方，不参与搜索过滤（保证入口不丢）。
+                String label = UiText.fit(
+                        "§b🎬 全局播放队列（" + QueueClient.globalCount() + " 首）", w - 10);
+                addRenderableWidget(Button.builder(Component.literal(label),
+                        btn -> GuiNav.open(this, ScreenQueueManagerScreen.forGlobalQueue()))
                         .bounds(left, y, w, 20).build());
                 return y + 22;
             }
-            case NO_SCREEN -> {
-                Button noScreen = Button.builder(
-                        Component.literal("§7暂无已知屏幕（创建屏幕后可在此查看各屏队列）"), btn -> {})
-                        .bounds(left, y, w, 20).build();
-                noScreen.active = false;
-                addRenderableWidget(noScreen);
+            case PLAYER_GROUP -> {
+                PlayerGroup g = row.group();
+                if (g == null) return y;
+                // 一行一个玩家：玩家名 + 屏幕数 + 队列数；点整行 → 该玩家的屏幕列表
+                String label = UiText.fit("§b" + g.label() + "  §7屏幕 " + g.screens().size()
+                        + " 个  §7队列 " + queueCountOf(g.screens()) + " 首", w - 10);
+                addRenderableWidget(Button.builder(Component.literal(label),
+                        btn -> GuiNav.open(this, ScreenQueueManagerScreen.forPlayer(g.key(), g.label())))
+                        .bounds(left, y, w, 20).build());
+                return y + 22;
+            }
+            case PLAYER_HEADER -> {
+                // 某玩家屏幕列表页表头：黄色文字标题（与单屏明细页组头同一风格）
+                PlayerGroup g = row.group();
+                if (g == null) return y;
+                // 显示名与主页玩家行保持一致：优先用上一级传入的玩家名
+                String pName = (ownerLabel == null || ownerLabel.isEmpty()) ? g.label() : ownerLabel;
+                addRenderableWidget(new GuiTextLabel(this.width / 2, y + 4, w, 12,
+                        "👤 " + pName + "  屏幕 " + g.screens().size()
+                                + " 个  队列 " + queueCountOf(g.screens()) + " 首",
+                        GuiTextLabel.Align.CENTER, GuiTextLabel.YELLOW));
+                return y + 22;
+            }
+            case GLOBAL_HEADER -> {
+                // 全局专用队列明细页表头：黄色文字标题
+                addRenderableWidget(new GuiTextLabel(this.width / 2, y + 4, w, 12,
+                        "🎬 全局播放队列（" + QueueClient.globalCount() + " 首）",
+                        GuiTextLabel.Align.CENTER, GuiTextLabel.YELLOW));
+                return y + 22;
+            }
+            case SCREEN_SUMMARY -> {
+                CinemaScreen s = row.screen();
+                if (s == null) return y;
+                // 屏幕列表：一行一个屏幕（空队列也显示，队列 0 首），文案 = 屏幕名 + 坐标 + 队列数量
+                // 点整行 → 进入该屏队列明细页（条目渲染/按钮逻辑完全不变）
+                String label = "§b📺 " + s.displayName() + " @ " + s.center().toShortString()
+                        + "  §7队列 " + QueueClient.countFor(s.id()) + " 首";
+                addRenderableWidget(Button.builder(Component.literal(label),
+                        btn -> GuiNav.open(this, new ScreenQueueManagerScreen(s.id())))
+                        .bounds(left, y, w - 38, 20).build());
+                // 行右侧保留"清空该屏队列"（两次点击确认，与原来一致）
+                String key = s.id().toString();
+                boolean hasEntries = QueueClient.countFor(s.id()) > 0;
+                Button clearBtn = Button.builder(
+                        Component.literal(key.equals(pendingClearScreenId) ? "§c⚠确认" : "清空"),
+                        btn -> clearQueue(s)
+                ).bounds(left + w - 36, y, 36, 20).build();
+                clearBtn.active = hasEntries || key.equals(pendingClearScreenId);
+                addRenderableWidget(clearBtn);
                 return y + 22;
             }
             case SCREEN_HEADER -> {
+                // 单屏明细页组头：统一为黄色文字标题（原灰色不可点击按钮框已替换，行为不变）
                 CinemaScreen s = row.screen();
                 if (s == null) return y;
-                // 组头：屏幕名 + 坐标 + 队列数量（空队列也显示，队列 0 首）
-                String label = "§b📺 " + s.displayName() + " @ " + s.center().toShortString()
-                        + "  §7队列 " + QueueClient.countFor(s.id()) + " 首";
-                // 总设置入口的组头右侧带"清空该屏队列"（两次点击确认）；单屏视图由底部清空按钮负责
-                int labelW = isGlobalView() ? w - 38 : w;
-                Button headerBtn = Button.builder(Component.literal(label), btn -> {})
-                        .bounds(left, y, labelW, 20).build();
-                headerBtn.active = false;
-                addRenderableWidget(headerBtn);
-                if (isGlobalView()) {
-                    String key = s.id().toString();
-                    boolean hasEntries = QueueClient.countFor(s.id()) > 0;
-                    Button clearBtn = Button.builder(
-                            Component.literal(key.equals(pendingClearScreenId) ? "§c⚠确认" : "清空"),
-                            btn -> clearQueue(s)
-                    ).bounds(left + w - 36, y, 36, 20).build();
-                    clearBtn.active = hasEntries || key.equals(pendingClearScreenId);
-                    addRenderableWidget(clearBtn);
-                }
+                addRenderableWidget(new GuiTextLabel(this.width / 2, y + 4, w, 12,
+                        "📺 " + s.displayName() + " @ " + s.center().toShortString()
+                                + "  队列 " + QueueClient.countFor(s.id()) + " 首",
+                        GuiTextLabel.Align.CENTER, GuiTextLabel.YELLOW));
                 return y + 22;
             }
             default -> { }   // 条目行在下方处理
         }
 
-        // 条目行：区块 A 全局条目（entryScreen 为 null）或区块 B/单屏的某屏条目
+        // 条目行：全局专用队列条目（entryScreen 为 null）或某屏队列条目
         boolean globalEntry = row.kind() == RowKind.GLOBAL_ENTRY;
         UUID sid = row.entryScreen();
         int i = row.entryIndex();
@@ -272,28 +399,25 @@ public class ScreenQueueManagerScreen extends Screen {
                 ? QUEUE_TIME_FMT.format(Instant.ofEpochMilli(entry.timeMs())
                         .atZone(ZoneId.systemDefault()))
                 : "未知时间";
-        // 单屏视图在条目里带上屏幕标签；总设置入口由区块组头给出屏幕名（不重复）
+        // 屏幕明细页的条目带上所属屏幕标签（全局专用队列条目没有屏幕）
         String screenTag = "";
-        if (!globalEntry && !isGlobalView()) {
+        if (!globalEntry) {
             CinemaScreen qScreen = ClientScreenManager.get().getScreen(sid);
             String screenLabel = (qScreen == null)
                     ? "未知屏幕" : qScreen.displayName() + "@" + qScreen.center().toShortString();
             screenTag = "  §7[" + screenLabel + "]";
         }
-        // 行文案：序号 + 绿色标题 +（单屏：所属屏幕 →）加队列玩家 → 加入时间
+        // 行文案：序号 + 绿色标题 +（屏幕明细：所属屏幕 →）加队列玩家 → 加入时间
         String fullName = (i + 1) + ". §a" + ClientConfig.displayNameFor(url)
                 + screenTag + "  §7" + playerName + "  " + timeText;
         int nameW = w - 3 * 30 - 6;
         final int index = i;
         Button nameBtn = Button.builder(Component.literal(""), btn -> {
             if (globalEntry) {
-                // 区块 A：手动点击 = 向所有屏幕的 owner 发播放申请（两次点击确认）
+                // 全局专用队列：手动点击 = 向所有屏幕的 owner 发播放申请（两次点击确认）
                 globalPlay(index, url);
-            } else if (isGlobalView()) {
-                // 区块 B 汇总：点条目同样走申请流程（不直接在该屏播放）
-                applyAllFromScreenQueue(sid, index, url);
             } else {
-                // 单屏视图：点条目名 = 从该屏队列立即播放该项（条目保留，供自动下一个使用）
+                // 屏幕明细页：点条目名 = 从该屏队列立即播放该项（条目保留，供自动下一个使用）
                 ClientNetworkHandlers.sendQueuePlay(sid, index);
             }
         }).bounds(left, y, nameW, 20).build();
@@ -301,9 +425,6 @@ public class ScreenQueueManagerScreen extends Screen {
         // 序号+名称（含标题/备注）：悬停才滚动显示全部
         String shown;
         if (globalEntry && url.equals(pendingGlobalPlayUrl)) {
-            shown = "§c⚠ 再点一次: 向所有屏幕发播放申请 ▶ " + ClientConfig.displayNameFor(url);
-        } else if (!globalEntry && isGlobalView()
-                && (sid + "#" + index).equals(pendingApplyKey)) {
             shown = "§c⚠ 再点一次: 向所有屏幕发播放申请 ▶ " + ClientConfig.displayNameFor(url);
         } else {
             shown = fullName;
@@ -335,46 +456,185 @@ public class ScreenQueueManagerScreen extends Screen {
         return y + 22;
     }
 
-    /** 构建显示行：总设置入口=区块 A 全局队列 + 区块 B 按屏分组的汇总；单屏视图=1 个组头 + 该屏条目。 */
+    /**
+     * 构建显示行（随视图与搜索关键字变化）：
+     * 主页＝全局专用队列入口 + 玩家列表；玩家屏幕列表／屏幕控制屏幕列表＝表头 + 每屏一行；
+     * 明细页＝组头 + 当前队列条目（全局专用队列条目无屏幕标签）。
+     */
     private List<Row> buildRows() {
         List<Row> rows = new ArrayList<>();
-        if (isGlobalView()) {
-            // ── 区块 A：全局播放队列（原样，不分组、不参与自动连播） ──
-            int n = QueueClient.globalCount();
-            for (int i = 0; i < n; i++) {
-                rows.add(Row.globalEntry(i));
-            }
-            if (n == 0) {
-                rows.add(Row.of(RowKind.GLOBAL_EMPTY));
-            }
-            // ── 区块 B：各屏幕队列（汇总，按屏幕分组；空队列也保留组头） ──
-            rows.add(Row.of(RowKind.SECTION_TITLE));
-            List<CinemaScreen> screens =
-                    new ArrayList<>(ClientScreenManager.get().allScreens().values());
-            screens.sort((a, b) -> a.displayName().compareToIgnoreCase(b.displayName()));
-            if (screens.isEmpty()) {
-                rows.add(Row.of(RowKind.NO_SCREEN));
-                return rows;
-            }
-            for (CinemaScreen s : screens) {
-                rows.add(Row.screenHeader(s));
-                int cn = QueueClient.countFor(s.id());
-                for (int i = 0; i < cn; i++) {
-                    rows.add(Row.screenEntry(s.id(), i));
+        switch (view) {
+            case HOME -> {
+                // 全局专用队列入口固定在主页最上方（不参与搜索过滤，保证入口不丢）
+                rows.add(Row.globalQueueLink());
+                for (PlayerGroup g : filteredPlayerGroups()) {
+                    rows.add(Row.playerGroup(g));
                 }
             }
-            return rows;
-        }
-        CinemaScreen s = ClientScreenManager.get().getScreen(screenId);
-        if (s == null) return rows;
-        int n = QueueClient.countFor(screenId);
-        if (n == 0) return rows;   // 空队列：由空状态提示行呈现
-        rows.add(Row.screenHeader(s));
-        for (int i = 0; i < n; i++) {
-            rows.add(Row.screenEntry(screenId, i));
+            case PLAYER_SCREENS -> {
+                PlayerGroup g = playerGroupOf(ownerKey);
+                if (g == null) return rows;
+                rows.add(Row.playerHeader(g));
+                for (CinemaScreen s : filteredScreens(g.screens())) {
+                    rows.add(Row.screenSummary(s));
+                }
+            }
+            case SCREEN_LIST -> {
+                for (CinemaScreen s : filteredScreens(allScreens())) {
+                    rows.add(Row.screenSummary(s));
+                }
+            }
+            case SCREEN_DETAIL -> {
+                CinemaScreen s = targetScreen();
+                if (s == null) return rows;
+                List<Integer> idx = filteredEntryIndexes(QueueClient.entriesFor(screenId));
+                if (idx.isEmpty()) return rows;   // 空队列：由空状态提示行呈现
+                rows.add(Row.screenHeader(s));
+                for (int i : idx) {
+                    rows.add(Row.screenEntry(screenId, i));
+                }
+            }
+            case GLOBAL_DETAIL -> {
+                // 空队列：不显示任何行（原空状态提示行已按用户要求删除）
+                List<Integer> idx = filteredEntryIndexes(QueueClient.globalEntries());
+                if (idx.isEmpty()) return rows;
+                rows.add(Row.globalHeader());
+                for (int i : idx) {
+                    rows.add(Row.globalEntry(i));
+                }
+            }
         }
         return rows;
     }
+
+    // ───────────── 搜索过滤（玩家名 / 屏幕名 / 视频标题） ─────────────
+
+    private String normalizedQuery() {
+        return query == null ? "" : query.trim().toLowerCase();
+    }
+
+    /** 屏幕是否命中搜索：屏幕名/自定义名/创建者/该屏队列的视频标题或入队玩家。 */
+    private static boolean screenMatches(CinemaScreen s, String q) {
+        if (s.displayName() != null && s.displayName().toLowerCase().contains(q)) return true;
+        if (s.customId() != null && s.customId().toLowerCase().contains(q)) return true;
+        String owner = ScreenAdminClient.ownerOf(s.id());
+        if (owner != null && owner.toLowerCase().contains(q)) return true;
+        for (QueueEntry e : QueueClient.entriesFor(s.id())) {
+            if (entryMatches(e, q)) return true;
+        }
+        return false;
+    }
+
+    /** 队列条目是否命中搜索：视频标题（备注→标题→链接）+ 入队玩家名。 */
+    private static boolean entryMatches(QueueEntry e, String q) {
+        if (e == null) return false;
+        if (ClientConfig.displayNameFor(e.url()).toLowerCase().contains(q)) return true;
+        return e.player() != null && e.player().toLowerCase().contains(q);
+    }
+
+    private List<CinemaScreen> filteredScreens(List<CinemaScreen> screens) {
+        String q = normalizedQuery();
+        if (q.isEmpty()) return screens;
+        List<CinemaScreen> out = new ArrayList<>();
+        for (CinemaScreen s : screens) {
+            if (screenMatches(s, q)) out.add(s);
+        }
+        return out;
+    }
+
+    private List<PlayerGroup> filteredPlayerGroups() {
+        String q = normalizedQuery();
+        List<PlayerGroup> out = new ArrayList<>();
+        for (PlayerGroup g : playerGroups()) {
+            if (q.isEmpty() || g.label().toLowerCase().contains(q)
+                    || anyScreenMatches(g.screens(), q)) {
+                out.add(g);
+            }
+        }
+        return out;
+    }
+
+    private static boolean anyScreenMatches(List<CinemaScreen> screens, String q) {
+        for (CinemaScreen s : screens) {
+            if (screenMatches(s, q)) return true;
+        }
+        return false;
+    }
+
+    /** 队列条目里命中搜索的下标（保留下标原值：删除/上下移仍作用于服务端列表的真实位置）。 */
+    private List<Integer> filteredEntryIndexes(List<QueueEntry> list) {
+        String q = normalizedQuery();
+        List<Integer> out = new ArrayList<>();
+        for (int i = 0; i < list.size(); i++) {
+            if (q.isEmpty() || entryMatches(list.get(i), q)) out.add(i);
+        }
+        return out;
+    }
+
+    // ───────────── 玩家分组（与屏幕列表管理/选择屏幕同一套分组规则） ─────────────
+
+    /** 玩家分组：key = ownerId（"" = 未知玩家），label = 显示名，screens = 该玩家屏幕。 */
+    private record PlayerGroup(String key, String label, List<CinemaScreen> screens) {}
+
+    /** 全部已知屏幕（按屏幕名排序）。 */
+    private static List<CinemaScreen> allScreens() {
+        List<CinemaScreen> screens =
+                new ArrayList<>(ClientScreenManager.get().allScreens().values());
+        screens.sort((a, b) -> a.displayName().compareToIgnoreCase(b.displayName()));
+        return screens;
+    }
+
+    /** 按 owner 分组（一行一个玩家），组按玩家名排序。 */
+    private static List<PlayerGroup> playerGroups() {
+        Map<String, List<CinemaScreen>> map = new LinkedHashMap<>();
+        for (CinemaScreen s : allScreens()) {
+            map.computeIfAbsent(ownerKeyOf(s), k -> new ArrayList<>()).add(s);
+        }
+        List<PlayerGroup> out = new ArrayList<>();
+        for (Map.Entry<String, List<CinemaScreen>> e : map.entrySet()) {
+            out.add(new PlayerGroup(e.getKey(), ownerLabelOf(e.getValue()), e.getValue()));
+        }
+        out.sort((a, b) -> a.label().compareToIgnoreCase(b.label()));
+        return out;
+    }
+
+    private static PlayerGroup playerGroupOf(String key) {
+        if (key == null) return null;
+        for (PlayerGroup g : playerGroups()) {
+            if (g.key().equals(key)) return g;
+        }
+        return null;
+    }
+
+    /** 分组键：屏幕 ownerId（缺失/为空归入 ""="未知玩家"）。 */
+    private static String ownerKeyOf(CinemaScreen s) {
+        return s.ownerId() == null ? "" : s.ownerId();
+    }
+
+    /** 分组显示名：取组内任一屏幕的创建者元数据名；没有则"未知玩家"。 */
+    private static String ownerLabelOf(List<CinemaScreen> screens) {
+        for (CinemaScreen s : screens) {
+            String owner = ScreenAdminClient.ownerOf(s.id());
+            if (owner != null && !owner.isEmpty()) return owner;
+        }
+        return "未知玩家";
+    }
+
+    /** 一组屏幕的队列条目总数。 */
+    private static int queueCountOf(List<CinemaScreen> screens) {
+        int n = 0;
+        for (CinemaScreen s : screens) {
+            n += QueueClient.countFor(s.id());
+        }
+        return n;
+    }
+
+    /** 单屏明细页的目标屏幕。 */
+    private CinemaScreen targetScreen() {
+        return screenId == null ? null : ClientScreenManager.get().getScreen(screenId);
+    }
+
+    // ───────────── 队列操作（与原来一致：乐观本地更新 + 服务端执行 + 两次确认） ─────────────
 
     /** 上移/下移：乐观本地更新 + 服务端执行（服务端广播随后覆盖）；sid=null 为全局队列，否则作用于该屏队列。 */
     private void move(UUID sid, int index, int delta) {
@@ -388,7 +648,6 @@ public class ScreenQueueManagerScreen extends Screen {
         } else {
             QueueClient.localMove(sid, index, target);
             ClientNetworkHandlers.sendQueueMove(sid, index, target);
-            pendingApplyKey = null;   // 顺序变更：区块 B 的申请确认作废
         }
         followPage(sid, target);
         rebuildWidgets();
@@ -426,7 +685,6 @@ public class ScreenQueueManagerScreen extends Screen {
         } else {
             QueueClient.localRemove(sid, index);
             ClientNetworkHandlers.sendQueueRemove(sid, index);
-            pendingApplyKey = null;   // 下标变更：区块 B 的申请确认作废
         }
         if (!globalScope && QueueClient.countFor(sid) == 0
                 && sid.toString().equals(pendingClearScreenId)) {
@@ -437,7 +695,7 @@ public class ScreenQueueManagerScreen extends Screen {
         rebuildWidgets();
     }
 
-    /** 点全局队列条目：两次点击确认后向所有屏幕的 owner 发播放申请（服务端执行）。 */
+    /** 点全局专用队列条目：两次点击确认后向所有屏幕的 owner 发播放申请（服务端执行）。 */
     private void globalPlay(int index, String url) {
         if (index < 0 || index >= QueueClient.globalCount()) return;
         if (url == null || !url.equals(pendingGlobalPlayUrl)) {
@@ -451,26 +709,7 @@ public class ScreenQueueManagerScreen extends Screen {
         rebuildWidgets();
     }
 
-    /**
-     * 区块 B 汇总视图点某屏队列条目：两次点击确认后向所有屏幕的 owner 发播放申请
-     * （与区块 A 同一路径，<b>不</b>直接在该屏播放；管理操作仍作用于该屏队列）。
-     */
-    private void applyAllFromScreenQueue(UUID sid, int index, String url) {
-        if (sid == null || url == null || url.isEmpty()) return;
-        if (index < 0 || index >= QueueClient.countFor(sid)) return;
-        String key = sid + "#" + index;
-        if (!key.equals(pendingApplyKey)) {
-            pendingApplyKey = key;
-            chat("§e[CinemaForYou] 将向所有屏幕发送播放申请，再点一次确认");
-            rebuildWidgets();
-            return;
-        }
-        pendingApplyKey = null;
-        ScreenSoundSettingsScreen.playOnAll(url);
-        rebuildWidgets();
-    }
-
-    /** 清空全局播放队列：两次点击确认。 */
+    /** 清空全局专用队列：两次点击确认。 */
     private void clearGlobalQueue() {
         if (!pendingClearGlobal) {
             pendingClearGlobal = true;
@@ -496,13 +735,12 @@ public class ScreenQueueManagerScreen extends Screen {
             return;
         }
         pendingClearScreenId = null;
-        pendingApplyKey = null;   // 队列已清空：该屏的申请确认作废
         QueueClient.localClear(s.id());
         ClientNetworkHandlers.sendQueueClear(s.id());
-        if (!isGlobalView()) {
-            page = 0;   // 单屏视图原行为：清空后回到第一页
+        if (view == View.SCREEN_DETAIL) {
+            page = 0;   // 单屏明细页原行为：清空后回到第一页
         } else {
-            // 总设置入口：清空某屏队列后行数变少，当前页跟随收敛
+            // 屏幕列表页：清空某屏队列后行数变少，当前页跟随收敛
             page = Math.min(page, Math.max(0, (buildRows().size() - 1) / ROWS_PER_PAGE));
         }
         rebuildWidgets();

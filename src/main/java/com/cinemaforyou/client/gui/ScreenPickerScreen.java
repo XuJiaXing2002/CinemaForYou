@@ -36,7 +36,8 @@ public class ScreenPickerScreen extends ScrollableSettingsScreen {
         int cx = this.width / 2;
         int w = Math.min(320, this.width - 30);
         int left = cx - w / 2;
-        int y = 8;
+        // 内容起始 y=2：标题贴屏幕顶部，去掉原来的顶部留白（行距保持不变）
+        int y = 2;
 
         List<CinemaScreen> all = new ArrayList<>(ClientScreenManager.get().allScreens().values());
         all.sort((a, b) -> a.displayName().compareToIgnoreCase(b.displayName()));

@@ -63,7 +63,7 @@ import net.minecraft.network.chat.Component;
 public class ScreenControlScreen
 extends ScrollableSettingsScreen {
     private static final int[] RESOLUTIONS = new int[]{360, 480, 720, 1080, 1440, 2160};
-    private static final int HEADER_H = 78;
+    private static final int HEADER_H = 76;
     /** 当前控制的屏幕（可由「当前屏幕选择」切换：切换后本页所有功能作用于新选中的屏幕）。 */
     private UUID screenId;
     /** 打开「当前屏幕选择」前的选择结果（lastControlScreenId）；返回后若变化说明用户点了新屏幕。 */
@@ -130,7 +130,8 @@ extends ScrollableSettingsScreen {
         int cx = this.width / 2;
         int w = Math.min(310, this.width - 30);
         int left = cx - w / 2;
-        int y = 78;
+        // 顶部信息面板贴屏幕顶部（原 y=2..76 → 0..74），内容起始 y 随之上移 2px（78 → 76）
+        int y = 76;
         int rowH = 22;
         CinemaScreen screen = this.currentScreen();
         if (screen == null) {
@@ -172,13 +173,16 @@ extends ScrollableSettingsScreen {
             this.openChild(new TargetSearchScreen());
         }).bounds(left, this.ry(y += rowH), w, 20).build());
         this.addRenderableWidget(Button.builder(Component.literal("\ud83d\udda5 \u670d\u52a1\u5668\u5a92\u4f53\u5e93\uff08\u670d\u52a1\u5668 cinema/videos\uff09"), btn -> this.openChild(new ServerMediaScreen(this.screenId))).bounds(left, this.ry(y += rowH), w, 20).build());
-        this.addRenderableWidget(Button.builder(Component.literal("\u64ad\u653e\u961f\u5217"), btn -> this.openChild(new ScreenQueueManagerScreen(this.screenId))).bounds(left, this.ry(y += rowH), w, 20).build());
+        // 播放队列：屏幕控制入口只有两级（全部屏幕列表 → 该屏队列明细），不显示玩家层级
+        this.addRenderableWidget(Button.builder(Component.literal("\u64ad\u653e\u961f\u5217"), btn -> this.openChild(ScreenQueueManagerScreen.forScreenList())).bounds(left, this.ry(y += rowH), w, 20).build());
         this.addRenderableWidget(Button.builder(Component.literal("\u2699 \u58f0\u97f3\u4e0e\u64ad\u653e\u8bbe\u7f6e\u2026\uff08\u8303\u56f4/\u8870\u51cf/\u64ad\u5b8c\u884c\u4e3a\uff09"), btn -> this.openChild(new ScreenSoundSettingsScreen(this.screenId))).bounds(left, this.ry(y += rowH), w, 20).build());
         y += rowH + 4;
         y = this.stepRow(cx, y, "\u4eae\u5ea6", screen.brightnessPercent() + "%", (d, s) -> s.withSettings(ScreenControlScreen.clamp(s.brightnessPercent() + d, 0, 100), s.volumePercent(), s.resolutionHeight(), s.displayScalePercent()));
         y = this.stepRow(cx, y, "\u97f3\u91cf", screen.volumePercent() + "%", (d, s) -> s.withSettings(s.brightnessPercent(), ScreenControlScreen.clamp(s.volumePercent() + d, 0, 100), s.resolutionHeight(), s.displayScalePercent()));
         y = this.stepRow(cx, y, "\u5927\u5c0f", screen.displayScalePercent() + "%", (d, s) -> s.withSettings(s.brightnessPercent(), s.volumePercent(), s.resolutionHeight(), ScreenControlScreen.clamp(s.displayScalePercent() + d, 25, 200)));
         y = this.stepRow(cx, y, "\u5206\u8fa8\u7387", screen.resolutionHeight() + "p", (d, s) -> s.withSettings(s.brightnessPercent(), s.volumePercent(), ScreenControlScreen.resByIndex(s.resolutionHeight(), d), s.displayScalePercent()));
+        // 长条按钮「曲率类型」：上下间距统一为 22px 行距 / 2px 间隙（与其它长条按钮一致）；
+        // 上方 stepRow 返回 +21，故这里 +1 补齐，下方 y += rowH 的行距不变
         int curvType = screen.curvatureType();
         this.addRenderableWidget(Button.builder(Component.literal(("\u66f2\u7387\u7c7b\u578b: " + ScreenControlScreen.curvatureTypeLabel(curvType))), btn -> {
             int next = (curvType + 1) % 5;
@@ -188,7 +192,7 @@ extends ScrollableSettingsScreen {
             } else {
                 this.hint("\u5df2\u6062\u590d\u5e73\u9762\u5c4f");
             }
-        }).bounds(cx - 120, this.ry(y), 240, 20).build());
+        }).bounds(cx - 120, this.ry(y += 1), 240, 20).build());
         y += rowH;
         y = this.stepRow(cx, y, "\u5de6\u5f27", screen.curvDegL() + "\u00b0", (d, s) -> s.withCurvatureSettings(s.curvatureType(), ScreenControlScreen.clamp(s.curvDegL() + d, 0, 90), s.curvDegR(), s.curvDegT(), s.curvDegB()));
         y = this.stepRow(cx, y, "\u53f3\u5f27", screen.curvDegR() + "\u00b0", (d, s) -> s.withCurvatureSettings(s.curvatureType(), s.curvDegL(), ScreenControlScreen.clamp(s.curvDegR() + d, 0, 90), s.curvDegT(), s.curvDegB()));
@@ -198,7 +202,9 @@ extends ScrollableSettingsScreen {
         }
         y = this.stepRow(cx, y, "\u5de6\u53f3\u503e\u659c", screen.tiltDegH() + "\u00b0", (d, s) -> s.withTiltSettings(ScreenControlScreen.clamp(s.tiltDegH() + d, -180, 180), s.tiltDegV()));
         y = this.stepRow(cx, y, "\u4e0a\u4e0b\u4fef\u4ef0", screen.tiltDegV() + "\u00b0", (d, s) -> s.withTiltSettings(s.tiltDegH(), ScreenControlScreen.clamp(s.tiltDegV() + d, -180, 180)));
-        this.addRenderableWidget(Button.builder(Component.literal("\u79fb\u52a8\u5c4f\u5e55"), btn -> {}).bounds(cx - 120, this.ry(y += 2), 240, 20).build());
+        // 分组按钮「移动屏幕」（240 宽、居中）：上下间距统一为 22px 行距 / 2px 间隙（与其它长条按钮一致）；
+        // 上方 actionRow 返回 +21，故把原来的 +2 改为 +1 补齐，下方 y += 22 的行距不变
+        this.addRenderableWidget(Button.builder(Component.literal("\u79fb\u52a8\u5c4f\u5e55"), btn -> {}).bounds(cx - 120, this.ry(y += 1), 240, 20).build());
         y += 22;
         int[] hDir = ScreenControlScreen.horizontalDelta(screen.orientation());
         int[] vDir = ScreenControlScreen.verticalDelta(screen.orientation());
@@ -206,7 +212,9 @@ extends ScrollableSettingsScreen {
         y = this.actionRow(cx, y, "\u00a7e\u6a2a\u79fb\u5c4f\u5e55 \u00a7f" + ScreenControlScreen.signed(this.moveValue(screen, hDir)), () -> this.moveScreenBy(hDir, -10), () -> this.moveScreenBy(hDir, -1), () -> this.moveScreenBy(hDir, 1), () -> this.moveScreenBy(hDir, 10));
         y = this.actionRow(cx, y, "\u00a7e\u7eb5\u79fb\u5c4f\u5e55 \u00a7f" + ScreenControlScreen.signed(this.moveValue(screen, vDir)), () -> this.moveScreenBy(vDir, -10), () -> this.moveScreenBy(vDir, -1), () -> this.moveScreenBy(vDir, 1), () -> this.moveScreenBy(vDir, 10));
         y = this.actionRow(cx, y, "\u00a7e\u524d\u540e\u79fb\u5c4f \u00a7f" + ScreenControlScreen.signed(this.moveValue(screen, nDir)), () -> this.moveScreenBy(nDir, -10), () -> this.moveScreenBy(nDir, -1), () -> this.moveScreenBy(nDir, 1), () -> this.moveScreenBy(nDir, 10));
-        this.addRenderableWidget(Button.builder(Component.literal("\u5c4f\u8fb9\u62c9\u7f29"), btn -> {}).bounds(cx - 120, this.ry(y += 2), 240, 20).build());
+        // 分组按钮「屏边拉缩」（240 宽、居中）：上下间距统一为 22px 行距 / 2px 间隙（与其它长条按钮一致）；
+        // 上方 actionRow 返回 +21，故把原来的 +2 改为 +1 补齐，下方 y += 22 的行距不变
+        this.addRenderableWidget(Button.builder(Component.literal("\u5c4f\u8fb9\u62c9\u7f29"), btn -> {}).bounds(cx - 120, this.ry(y += 1), 240, 20).build());
         y += 22;
         int[] nArray = edgeOrder = new int[]{2, 3, 0, 1};
         int n = nArray.length;
@@ -215,7 +223,8 @@ extends ScrollableSettingsScreen {
             int e = edge = nArray[i];
             y = this.actionRow(cx, y, "\u00a7e" + ScreenControlScreen.edgeName(e) + " \u00a7f" + ScreenControlScreen.signed(this.edgeValue(screen, e)), () -> this.resizeScreenEdge(e, -10), () -> this.resizeScreenEdge(e, -1), () -> this.resizeScreenEdge(e, 1), () -> this.resizeScreenEdge(e, 10));
         }
-        this.addRenderableWidget(Button.builder(Component.literal("\u2190 \u8fd4\u56de\u4e0a\u4e00\u7ea7"), btn -> this.onClose()).bounds(cx - 50, this.ry(y += rowH), 100, 20).build());
+        // 底部按钮：改名「关闭」、宽 240，与上一行操作按钮同列（cx-120 起）并紧贴其上（去掉原 y += rowH 的空档）
+        this.addRenderableWidget(Button.builder(Component.literal("\u5173\u95ed"), btn -> this.onClose()).bounds(cx - 120, this.ry(y), 240, 20).build());
         this.finishContent(y += 26);
     }
 
@@ -230,11 +239,11 @@ extends ScrollableSettingsScreen {
             return;
         }
         VideoPlayer player = this.currentPlayer();
-        extractor.fill(left - 8, 2, left + w + 8, 76, -1072689132);
+        extractor.fill(left - 8, 0, left + w + 8, 74, -1072689132);
         String name = "\u5c4f\u5e55: " + screen.displayName() + "  [" + screen.width() + "x" + screen.height() + "]  \u72b6\u6001: " + String.valueOf(this.currentState());
-        extractor.centeredText(this.font, Component.literal(("\u00a7e" + name)), cx, 8, 0xFFFFFF);
+        extractor.centeredText(this.font, Component.literal(("\u00a7e" + name)), cx, 6, 0xFFFFFF);
         String src = screen.sourceUrl().isEmpty() ? "\u7247\u6e90: \uff08\u672a\u8bbe\u7f6e\uff0c\u7528\u4e0b\u65b9\u5165\u53e3\u6dfb\u52a0\uff09" : "\u7247\u6e90: " + ClientConfig.displayNameFor(screen.sourceUrl());
-        extractor.centeredText(this.font, Component.literal(("\u00a7f" + UiText.fit(src, (int)w))), cx, 24, 0xFFFFFF);
+        extractor.centeredText(this.font, Component.literal(("\u00a7f" + UiText.fit(src, (int)w))), cx, 22, 0xFFFFFF);
         long dur = player != null ? player.getDurationMs() : 0L;
         long l = pos = player != null ? player.getPositionMs() : 0L;
         if (pos < 0L) {
@@ -242,8 +251,8 @@ extends ScrollableSettingsScreen {
         }
         int pct = dur > 0L ? (int)Math.max(0L, Math.min(100L, pos * 100L / dur)) : 0;
         String timeText = "\u25b6 \u5f53\u524d " + ScreenControlScreen.formatTime(pos) + "  /  \u603b\u957f " + (dur > 0L ? ScreenControlScreen.formatTime(dur) : "--:--") + (dur > 0L ? "\uff08" + pct + "%\uff09" : "");
-        extractor.text(this.font, Component.literal(("\u00a7b" + timeText)), cx - this.font.width(timeText) / 2, 40, 0xFFFFFF);
-        int barY = 58;
+        extractor.text(this.font, Component.literal(("\u00a7b" + timeText)), cx - this.font.width(timeText) / 2, 38, 0xFFFFFF);
+        int barY = 56;
         int barH = 4;
         extractor.fill(left, barY, left + w, barY + barH, 0x50FFFFFF);
         if (dur > 0L && pos >= 0L) {

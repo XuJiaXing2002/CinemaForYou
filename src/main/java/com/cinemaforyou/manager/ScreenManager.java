@@ -117,16 +117,19 @@ public class ScreenManager {
         final String screenWhere;
         final String ownerId;
         final String ownerName;
+        /** 队列条目播放申请对应的队列下标（-1 = 普通播放，非队列条目）。 */
+        final int queueIndex;
         PlayRequestStatus status = PlayRequestStatus.PENDING;
 
         PlayRequestItem(PlayRequestBatch batch, UUID screenId, String screenName,
-                        String screenWhere, String ownerId, String ownerName) {
+                        String screenWhere, String ownerId, String ownerName, int queueIndex) {
             this.batch = batch;
             this.screenId = screenId;
             this.screenName = screenName;
             this.screenWhere = screenWhere;
             this.ownerId = ownerId == null ? "" : ownerId;
             this.ownerName = ownerName;
+            this.queueIndex = queueIndex;
         }
     }
 
@@ -473,7 +476,7 @@ public class ScreenManager {
         for (CinemaScreen s : new ArrayList<>(screens.values())) {
             ServerPlayer owner = onlineOwner(s);
             PlayRequestItem item = new PlayRequestItem(batch, s.id(), s.displayName(),
-                    s.center().toShortString(), s.ownerId(), resolveOwnerName(s));
+                    s.center().toShortString(), s.ownerId(), resolveOwnerName(s), -1);
             batch.items.add(item);
             if (owner == null) {
                 // owner 不在线 / 无 owner：无法送达，只计入汇总回执
@@ -490,6 +493,46 @@ public class ScreenManager {
         maybeSendSummary(batch);   // 全部离线/无人时直接给出汇总回执
         LOGGER.debug("[CinemaForYou] 播放申请已派发: 视频={} 屏幕={} 待响应={}",
                 shortUrl(url), batch.items.size(), batch.pending);
+    }
+
+    /**
+     * 单屏播放申请：任何玩家对"自己没有控制权"的屏幕发起播放时，不再直接拒绝，
+     * 而是向该屏 owner 发送一条与 {@link #playAll} 完全同款的播放申请
+     * （同样的 3 行聊天消息、{@link #PLAY_REQUEST_TIMEOUT_MS} 有效期、requestId 唯一防串号，
+     * 并进入现有 {@link #pendingPlayRequests} 与超时/汇总回执逻辑）；owner 接受后才真正播放。
+     *
+     * <p>权限：owner 播自己的屏、OP（等级 ≥2）播任意屏不走此入口（调用方已判定无控制权）。
+     *
+     * @param queueIndex 队列条目播放申请对应的队列下标（-1 = 普通播放）；
+     *                   接受后按该条目播放，条目不删除，"自动播放下一个"语义不变
+     */
+    public void requestPlayOnScreen(UUID id, String url, int queueIndex, ServerPlayer requester) {
+        CinemaScreen s = screens.get(id);
+        if (s == null) { notFound(requester, id); return; }
+        if (url == null || url.isEmpty()) return;
+        // 与全局播放入口一致：白名单/本地文件校验不合格就不发申请（接受时还会再校验一次）
+        if (!checkPlayUrl(url, requester)) return;
+
+        PlayRequestBatch batch = new PlayRequestBatch(
+                requester.getUUID(), playerDisplayName(requester), url);
+        PlayRequestItem item = new PlayRequestItem(batch, s.id(), s.displayName(),
+                s.center().toShortString(), s.ownerId(), resolveOwnerName(s), queueIndex);
+        batch.items.add(item);
+        ServerPlayer owner = onlineOwner(s);
+        if (owner == null) {
+            // owner 不在线 / 无 owner：无法送达，只计入汇总回执
+            item.status = PlayRequestStatus.OFFLINE;
+        } else {
+            batch.pending++;
+            pendingPlayRequests.put(item.requestId, item);
+            sendPlayRequest(owner, item);
+        }
+        requester.sendSystemMessage(Component.literal(
+                "§a[CinemaForYou] 已向该屏幕的 owner 发送播放申请"
+                        + "（owner 接受后才播放；" + (PLAY_REQUEST_TIMEOUT_MS / 1000) + " 秒内有效）"));
+        maybeSendSummary(batch);   // owner 离线/无人时直接给出汇总回执
+        LOGGER.debug("[CinemaForYou] 单屏播放申请已派发: 视频={} 屏幕={} 队列下标={} 待响应={}",
+                shortUrl(url), s.id(), queueIndex, batch.pending);
     }
 
     /** 屏幕 owner 的在线玩家（owner 字段为空 / 玩家不在线返回 null）。 */
@@ -547,7 +590,17 @@ public class ScreenManager {
         pendingPlayRequests.remove(requestId);
         if (accept) {
             // 接受：沿用既有播放流程（白名单/本地文件改写/大文件转封装延迟都在 preparePlayUrl 内）
-            play(item.screenId, item.batch.url, responder);
+            // 队列条目播放申请：队列未被改动时按当前第 index 项播放（与 queuePlay 语义一致，
+            // 条目不删除）；已被改动/移除时退回申请时的 URL，保证按申请内容播放
+            String playUrl = item.batch.url;
+            if (item.queueIndex >= 0) {
+                List<QueueEntry> live = queues.get(item.screenId);
+                if (live != null && item.queueIndex < live.size()
+                        && item.batch.url.equals(live.get(item.queueIndex).url())) {
+                    playUrl = live.get(item.queueIndex).url();
+                }
+            }
+            play(item.screenId, playUrl, responder);
             responder.sendSystemMessage(Component.literal(
                     "§a[CinemaForYou] 已接受播放申请，屏幕「" + item.screenName + "」开始播放"));
             notifyInitiator(item, "§a[CinemaForYou] 屏幕「" + item.screenName + "」的 owner「"
@@ -798,6 +851,13 @@ public class ScreenManager {
         }
     }
 
+    /** 登记上传成功的媒体文件添加者（本模组上传链路在文件落盘后调用）。 */
+    public void registerMediaOwner(String name, ServerPlayer player) {
+        if (name == null || name.isEmpty() || player == null) return;
+        mediaOwners.put(name, playerDisplayName(player));
+        save();
+    }
+
     // ───────────── 播放队列（服务端唯一数据源） ─────────────
 
     /** 是否 OP（权限等级 ≥2），与各"仅管理员"入口的判定一致。 */
@@ -984,13 +1044,21 @@ public class ScreenManager {
         broadcastQueues();
     }
 
-    /** 从队列立即播放第 index 项（条目保留在队列中，供"循环/自动下一个"继续使用）。 */
+    /**
+     * 从队列立即播放第 index 项（条目保留在队列中，供"循环/自动下一个"继续使用）。
+     *
+     * <p>权限：owner/OP 直接播放；其它玩家不直接拒绝，改为向该屏 owner 发送同款播放申请
+     * （接受后按该队列条目语义播放，条目不删除）。
+     */
     public void queuePlay(UUID id, int index, ServerPlayer requester) {
         CinemaScreen s = screens.get(id);
         if (s == null) { notFound(requester, id); return; }
-        if (!canControl(s, requester)) { deny(requester); return; }
         List<QueueEntry> q = queues.get(id);
         if (q == null || index < 0 || index >= q.size()) return;
+        if (!canControl(s, requester)) {
+            requestPlayOnScreen(id, q.get(index).url(), index, requester);
+            return;
+        }
         play(id, q.get(index).url(), requester);
     }
 
