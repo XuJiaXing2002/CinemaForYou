@@ -194,6 +194,12 @@ extends ScrollableSettingsScreen {
         Button fwd10 = Button.builder(Component.literal("+10s"), btn -> this.seekRelative(10000L)).bounds(x4[3], this.ry(y), bw, 20).build();
         fwd10.active = canManage;
         this.addRenderableWidget(fwd10);
+        // ── 跳转到指定分钟：紧贴四个 seek 按钮行的正下方（行距 22px = 20 高 + 2 间隙，与全页各行一致），
+        // 宽度/对齐与下方其它长条按钮同列（left, w）；点击打开数值输入框（复用 InputValueScreen，
+        // 与「音频延迟」同一套用法），输入分钟数后按「目标毫秒 − 当前播放位置」的差值走四个 seek 按钮同一套相对 seek。
+        Button jumpMinuteBtn = Button.builder(Component.literal("跳转到~分钟"), btn -> this.openJumpMinuteEditor()).bounds(left, this.ry(y += rowH), w, 20).build();
+        jumpMinuteBtn.active = canManage;   // 进度跳转属控制类操作：与四个 seek 按钮置灰规则一致（owner 或 OP≥2）
+        this.addRenderableWidget(jumpMinuteBtn);
         int sw = (w - 4) / 3;
         this.addRenderableWidget(Button.builder(Component.literal("\ud83d\udd17 \u8f93\u5165\u94fe\u63a5"), btn -> this.openChild(new ScreenLinkInputScreen(this.screenId))).bounds(left, this.ry(y += rowH), sw, 20).build());
         this.addRenderableWidget(Button.builder(Component.literal("\ud83d\udcc2 \u672c\u5730\u89c6\u9891"), btn -> this.openChild(new VideoLibraryScreen(this.screenId))).bounds(left + sw + 2, this.ry(y), sw, 20).build());
@@ -378,6 +384,45 @@ extends ScrollableSettingsScreen {
     private void seekRelative(long delta) {
         long base = this.currentPlayer() != null ? this.currentPlayer().getPositionMs() : 0L;
         ClientNetworkHandlers.sendAction(ScreenActionPayload.seek((UUID)this.screenId, (long)Math.max(0L, base + delta)));
+    }
+
+    /**
+     * 打开「跳转到~分钟」输入框：复用通用数值输入界面 {@link InputValueScreen}（与「音频延迟」完全同一套用法），
+     * 初始值为当前播放位置的分钟数；非数字/负数直接忽略并提示（沿用既有的 try/catch 校验风格），
+     * 超出视频时长的情况由服务端/播放器按既有 seek 行为处理。
+     */
+    private void openJumpMinuteEditor() {
+        VideoPlayer player = this.currentPlayer();
+        long pos = player != null ? player.getPositionMs() : 0L;
+        int curMinute = (int)Math.max(0L, pos / 60000L);
+        this.openChild(new InputValueScreen(
+                "跳转到指定分钟（输入分钟数，如 30 = 第 30 分钟）\n超出视频时长时按播放器既有 seek 行为处理",
+                String.valueOf(curMinute), 6,
+                v -> {
+                    int minutes;
+                    try {
+                        minutes = Integer.parseInt(v.trim());
+                    } catch (NumberFormatException e) {
+                        this.hint("跳转失败：请输入非负整数分钟数（如 30）");
+                        return;
+                    }
+                    if (minutes < 0) {
+                        this.hint("跳转失败：分钟数不能为负数");
+                        return;
+                    }
+                    this.seekToMinute(minutes);
+                }));
+    }
+
+    /**
+     * 跳转到指定分钟：目标毫秒 = 分钟 × 60 × 1000；用「目标位置 − 当前播放位置」的差值
+     * 复用 {@link #seekRelative(long)}（与四个快进快退按钮同一套相对 seek，不改协议）。
+     */
+    private void seekToMinute(int minutes) {
+        long target = (long)minutes * 60L * 1000L;
+        VideoPlayer player = this.currentPlayer();
+        long base = player != null ? player.getPositionMs() : 0L;
+        this.seekRelative(target - base);
     }
 
     private int addSettingRow(String label, String value, int cx, int y, UnaryOperator<CinemaScreen> increase, UnaryOperator<CinemaScreen> decrease) {
