@@ -465,7 +465,8 @@ public class ScreenQueueManagerScreen extends Screen {
         List<Row> rows = new ArrayList<>();
         switch (view) {
             case HOME -> {
-                // 全局专用队列入口行已按用户要求删除（该列表常为空、无用）；主页只显示玩家列表
+                // 全局专用队列入口固定在主页最上方（不参与搜索过滤，保证入口不丢）
+                rows.add(Row.globalQueueLink());
                 for (PlayerGroup g : filteredPlayerGroups()) {
                     rows.add(Row.playerGroup(g));
                 }
