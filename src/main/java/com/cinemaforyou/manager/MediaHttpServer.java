@@ -31,27 +31,118 @@ import java.util.regex.Pattern;
  * 播放本地文件时会自动改写成 {@code http://…/cinema/文件名}，
  * 每个玩家的客户端各自从服务器拉流解码（与播放网址视频同一套解码链路）。
  *
- * <p>支持 Range（seek/拖动）与 HEAD；只允许访问媒体目录内的直接文件。
+ * <p>支持 Range（seek/拖动）与 HEAD；只允许访问媒体目录内的文件（含一级/多级子目录，
+ * 但排除上传临时目录 {@link #TEMP_DIR_NAME}）。
  */
 public final class MediaHttpServer {
+
+    /** 上传临时目录名（媒体目录下的隐藏子目录；列举/下载/删除一律排除）。 */
+    public static final String TEMP_DIR_NAME = ".upload_tmp";
 
     private static HttpServer server;
     private static File mediaDir;
 
     private MediaHttpServer() {}
 
-    /** 列出媒体目录内的文件名（排序），用于"服务器媒体库"。 */
+    /**
+     * 列出媒体目录内的媒体文件（相对路径，'/' 分隔，按名称排序），用于"服务器媒体库"。
+     *
+     * <p>递归扫描子目录（含上传落盘的"玩家名"文件夹），但跳过上传临时目录
+     * {@link #TEMP_DIR_NAME}，避免上传中的半成品出现在媒体库列表里。
+     * 直接放在根目录下的文件仍返回裸文件名（行为不变）。
+     */
     public static java.util.List<String> listMediaFiles() {
-        File[] children = mediaDirectory().listFiles();
-        if (children == null) return java.util.List.of();
         java.util.List<String> out = new java.util.ArrayList<>();
-        for (File f : children) {
-            if (f.isFile()) {
-                out.add(f.getName());
-            }
-        }
+        collectMediaFiles(mediaDirectory(), "", out);
         out.sort(String::compareToIgnoreCase);
         return out;
+    }
+
+    /** 递归收集媒体文件；prefix 为已累积的目录前缀（以 '/' 结尾，根目录为空串）。 */
+    private static void collectMediaFiles(File dir, String prefix, java.util.List<String> out) {
+        File[] children = dir.listFiles();
+        if (children == null) return;
+        for (File f : children) {
+            String name = f.getName();
+            if (f.isDirectory()) {
+                if (TEMP_DIR_NAME.equals(name)) continue; // 上传临时目录不上榜
+                collectMediaFiles(f, prefix + name + "/", out);
+            } else if (f.isFile()) {
+                out.add(prefix + name);
+            }
+        }
+    }
+
+    // ───────────── 媒体库相对路径工具（上传/列举/下载/删除/转封装共用） ─────────────
+
+    /**
+     * 校验媒体库相对路径是否合法：'/' 分隔，非空、非绝对路径、无 {@code ..} / {@code .}
+     * 空段、不含反斜杠或冒号（Windows 盘符），且任何一段都不是上传临时目录。
+     */
+    public static boolean isSafeMediaRelativePath(String rel) {
+        if (rel == null || rel.isEmpty()) return false;
+        if (rel.startsWith("/") || rel.endsWith("/")) return false;
+        if (rel.indexOf('\\') >= 0 || rel.indexOf(':') >= 0) return false;
+        for (String part : rel.split("/", -1)) {
+            if (part.isEmpty() || part.equals(".") || part.equals("..")
+                    || part.equals(TEMP_DIR_NAME)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * 把媒体库相对路径（可为"玩家名/文件"子目录形式）解析为媒体目录内的文件；
+     * 路径非法或越出媒体目录返回 null（不要求文件已存在）。
+     */
+    public static File resolveMediaFile(String relPath) {
+        if (!isSafeMediaRelativePath(relPath)) return null;
+        File root = mediaDirectory();
+        File f = new File(root, relPath);
+        try {
+            if (!f.getCanonicalFile().toPath().startsWith(root.getCanonicalFile().toPath())) {
+                return null;
+            }
+        } catch (IOException e) {
+            return null;
+        }
+        return f;
+    }
+
+    /** 媒体目录内的文件 → 媒体库相对路径（'/' 分隔，可为子目录）；不在目录内返回 null。 */
+    public static String relativeMediaPath(File file) {
+        if (file == null) return null;
+        try {
+            File root = mediaDirectory().getCanonicalFile();
+            File canon = file.getCanonicalFile();
+            java.nio.file.Path rootPath = root.toPath();
+            java.nio.file.Path p = canon.toPath();
+            if (!p.startsWith(rootPath) || p.equals(rootPath)) return null;
+            String rel = rootPath.relativize(p).toString().replace(File.separatorChar, '/');
+            return isSafeMediaRelativePath(rel) ? rel : null;
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    /**
+     * 从 {@code file:} 地址提取媒体库可用的名字：
+     * 相对路径（含"玩家名/文件"子目录形式）原样返回；本机绝对路径（Windows 盘符 /
+     * Unix 根路径）沿用旧行为，只取文件名（在媒体库根目录按同名文件匹配）。
+     * 非法路径返回 null。
+     */
+    public static String mediaLibraryNameFor(String sourceUrl) {
+        if (sourceUrl == null || !sourceUrl.startsWith("file:")) return null;
+        String path = sourceUrl.substring("file:".length()).replace('\\', '/');
+        if (path.isEmpty()) return null;
+        if (path.startsWith("/") || path.indexOf(':') >= 0) {
+            int slash = path.lastIndexOf('/');
+            String name = slash >= 0 ? path.substring(slash + 1) : path;
+            return name.isEmpty() ? null : name;
+        }
+        String rel = path.startsWith("./") ? path.substring(2) : path;
+        return isSafeMediaRelativePath(rel) ? rel : null;
     }
 
     /** 服务端媒体目录（服务器目录/cinema/videos）。 */
@@ -107,7 +198,7 @@ public final class MediaHttpServer {
     // ───────────── 地址改写 ─────────────
 
     /**
-     * 若该源是本地文件且服务端媒体目录存在同名文件，
+     * 若该源是本地文件且服务端媒体目录内存在对应文件（支持"玩家名/文件"子目录路径），
      * 改写为可由所有玩家拉取的 http 地址；否则原样返回。
      */
     public static String mapLocalFileToHttp(String sourceUrl) {
@@ -115,24 +206,25 @@ public final class MediaHttpServer {
         String base = resolveBaseUrl();
         if (base == null) return sourceUrl;
 
-        String path = sourceUrl.substring("file:".length());
-        File f = new File(path);
-        String name = f.getName();
-        if (name.isEmpty() || name.contains("/") || name.contains("\\")) return sourceUrl;
-
-        File media = new File(mediaDirectory(), name);
+        String rel = mediaLibraryNameFor(sourceUrl);
+        if (rel == null) return sourceUrl;
+        File media = resolveMediaFile(rel);
+        if (media == null) return sourceUrl;
         if (!media.isFile()) {
-            // 原文件可能已被自动转封装替换（.ts/.mkv → .mp4/.mkv）：改用优化版，
+            // 原文件可能已被自动转封装替换（.ts/.mkv → .mp4/.mkv）：改用同目录下的优化版，
             // 让旧引用（历史记录/播放列表）在替换后依然能播
-            File optimized = MediaRemuxer.findOptimized(mediaDirectory(), name);
+            File parent = media.getParentFile();
+            File optimized = parent == null ? null
+                    : MediaRemuxer.findOptimized(parent, media.getName());
             if (optimized == null) return sourceUrl; // 服务端没有此文件，保持原样（仅本机可见）
-            name = optimized.getName();
             media = optimized;
+            rel = relativeMediaPath(optimized);
+            if (rel == null) return sourceUrl;
         }
 
-        // 用 Base64url 做文件名标识：纯字母数字与 - _，任何网络环境/隧道/代理都安全
+        // 用 Base64url 做文件（相对）路径标识：纯字母数字与 - _，任何网络环境/隧道/代理都安全
         String token = java.util.Base64.getUrlEncoder().withoutPadding()
-                .encodeToString(name.getBytes(StandardCharsets.UTF_8));
+                .encodeToString(rel.getBytes(StandardCharsets.UTF_8));
         return base + "cinema/" + token;
     }
 
@@ -243,28 +335,10 @@ public final class MediaHttpServer {
                 exchange.sendResponseHeaders(400, -1);
                 return;
             }
-            if (name.isEmpty() || name.contains("/") || name.contains("\\") || name.equals("..")) {
-                exchange.sendResponseHeaders(400, -1);
-                return;
-            }
-            File file = new File(mediaDirectory(), name);
-            File dir;
-            try {
-                dir = mediaDirectory().getCanonicalFile();
-            } catch (IOException e) {
-                dir = mediaDirectory();
-            }
-            if (!file.isFile()) {
+            // 支持"玩家名/文件"等子目录相对路径；非法/越界（含 .upload_tmp）一律拒绝
+            File file = resolveMediaFile(name);
+            if (file == null || !file.isFile()) {
                 exchange.sendResponseHeaders(404, -1);
-                return;
-            }
-            try {
-                if (!file.getCanonicalFile().toPath().startsWith(dir.toPath())) {
-                    exchange.sendResponseHeaders(403, -1);
-                    return;
-                }
-            } catch (IOException e) {
-                exchange.sendResponseHeaders(403, -1);
                 return;
             }
 

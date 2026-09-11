@@ -729,8 +729,9 @@ public class ScreenManager {
         // 服务端媒体大文件自动转封装：命中需优化的容器时先排队转封装，
         // 完成后自动开始播放（避免远程玩家播放时的探测跳读网络开销）
         if (url.startsWith("file:")) {
-            String fileName = new java.io.File(url.substring("file:".length())).getName();
-            if (MediaRemuxer.maybeDeferPlay(screenIds, requester, fileName)) {
+            // 媒体库相对路径（可为"玩家名/视频.mp4"子目录路径）；非媒体库引用退回文件名
+            String fileName = com.cinemaforyou.manager.MediaHttpServer.mediaLibraryNameFor(url);
+            if (fileName != null && MediaRemuxer.maybeDeferPlay(screenIds, requester, fileName)) {
                 return null;
             }
         }
@@ -792,11 +793,15 @@ public class ScreenManager {
             playLog.add(new LogEntry(UUID.randomUUID(), System.currentTimeMillis(),
                     requester.getUUID().toString(), playerDisplayName(requester), effectiveUrl));
             // 媒体文件归属：首次被播放时记录是谁"添加"进来的
+            // （媒体库相对路径为键，支持"玩家名/文件"子目录路径）
             if (rawUrl != null && rawUrl.startsWith("file:")) {
-                String name = new java.io.File(rawUrl.substring("file:".length())).getName();
-                if (!name.isEmpty() && !mediaOwners.containsKey(name)
-                        && new java.io.File(MediaHttpServer.mediaDirectory(), name).isFile()) {
-                    mediaOwners.put(name, playerDisplayName(requester));
+                String name = com.cinemaforyou.manager.MediaHttpServer.mediaLibraryNameFor(rawUrl);
+                if (name != null && !name.isEmpty() && !mediaOwners.containsKey(name)) {
+                    java.io.File f =
+                            com.cinemaforyou.manager.MediaHttpServer.resolveMediaFile(name);
+                    if (f != null && f.isFile()) {
+                        mediaOwners.put(name, playerDisplayName(requester));
+                    }
                 }
             }
             save();

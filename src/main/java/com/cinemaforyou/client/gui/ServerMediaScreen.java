@@ -185,11 +185,11 @@ public class ServerMediaScreen extends Screen {
             ).bounds(left + w - 66, y, 66, 20).build());
         } else if (!hasOpPermission()) {
             addRenderableWidget(new GuiTextLabel(left, y + 4, w, 12,
-                    "§7仅管理员（OP≥2）可上传；上传文件将保存进服务器 media 目录",
+                    "§7仅管理员（OP≥2）可上传；上传文件会保存进服务器媒体库中以你命名的文件夹",
                     GuiTextLabel.Align.LEFT, GuiTextLabel.YELLOW));
         } else {
             addRenderableWidget(new GuiTextLabel(left, y + 4, w, 12,
-                    "§7仅限视频/音频文件；重名自动加序号；上传可随时取消",
+                    "§7仅限视频/音频文件；保存进以你命名的文件夹，重名自动加序号；上传可随时取消",
                     GuiTextLabel.Align.LEFT, GuiTextLabel.YELLOW));
         }
         return y + 20;

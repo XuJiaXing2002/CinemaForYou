@@ -23,14 +23,15 @@ import java.util.UUID;
  * 服务端"本地上传到服务器媒体库"会话管理（分块接收 → 重组写盘）。
  *
  * <p>流程：客户端 {@code MediaUploadStartPayload}（文件名+总大小）→ 服务端校验
- * （仅 OP≥2、视频扩展名白名单、重名自动加序号）并回 READY（含最终文件名）→
- * 客户端按块发 {@code MediaUploadChunkPayload}（约 256KB/块）→ 全部发完发
- * {@code MediaUploadFinishPayload} → 服务端校验字节数一致后把临时文件移入
- * {@link MediaHttpServer#mediaDirectory()}（服务器目录/cinema/videos），并登记添加者。
+ * （仅 OP≥2、视频扩展名白名单、同一玩家子目录内重名自动加序号）并回 READY
+ * （含最终文件名）→ 客户端按块发 {@code MediaUploadChunkPayload}（约 256KB/块）→
+ * 全部发完发 {@code MediaUploadFinishPayload} → 服务端校验字节数一致后把临时文件
+ * 移入该上传者的子目录（{@code 服务器目录/cinema/videos/上传者名/}，目录名经文件名
+ * 安全化，同一玩家多次上传复用），并登记添加者。
  *
  * <p>所有方法都在服务端主线程被调用（接收器里 {@code server.execute}），
  * 因此这里用普通 HashMap 即可；临时块文件放在媒体目录下的 {@code .upload_tmp}
- * 子目录，避免上传中的半成品出现在媒体库列表里。
+ * 子目录（媒体库扫描会排除该目录），避免上传中的半成品出现在媒体库列表里。
  */
 public final class MediaUploadManager {
 
@@ -47,13 +48,16 @@ public final class MediaUploadManager {
     /** 上传会话闲置超时（超过则丢弃临时文件）。 */
     private static final long SESSION_TIMEOUT_MS = 5 * 60_000L;
 
-    /** 临时块文件目录名（媒体目录下，listMediaFiles 只列文件不列目录）。 */
-    private static final String TEMP_DIR_NAME = ".upload_tmp";
+    /** 上传者子目录名长度上限（避免超长路径创建失败）。 */
+    private static final int DIR_NAME_MAX = 64;
+
+    /** 玩家子目录名兜底（名字安全化后为空时使用）。 */
+    private static final String FALLBACK_DIR_NAME = "未知玩家";
 
     /** 玩家 UUID → 进行中的上传会话（同一玩家同时只允许一个）。 */
     private static final Map<UUID, Session> sessions = new HashMap<>();
 
-    /** 已被上传会话预定的最终文件名（小写），防止并发上传撞名。 */
+    /** 已被上传会话预定的最终文件（子目录相对路径小写），防止并发上传撞名。 */
     private static final Set<String> reservedNames = new HashSet<>();
 
     private MediaUploadManager() {}
@@ -64,23 +68,32 @@ public final class MediaUploadManager {
         final File temp;
         final OutputStream out;
         final long declaredSize;
+        /** 最终落盘的玩家子目录（媒体目录/安全化后的上传者名）。 */
+        final File dir;
         final String finalName;
         long received;
         long lastActiveMs;
 
-        Session(int uploadId, File temp, OutputStream out, long declaredSize, String finalName) {
+        Session(int uploadId, File temp, OutputStream out, long declaredSize,
+                File dir, String finalName) {
             this.uploadId = uploadId;
             this.temp = temp;
             this.out = out;
             this.declaredSize = declaredSize;
+            this.dir = dir;
             this.finalName = finalName;
             this.lastActiveMs = System.currentTimeMillis();
+        }
+
+        /** 重名占位唯一键：玩家子目录 + 文件名（不同玩家的同名文件互不影响）。 */
+        String reservedKey() {
+            return MediaUploadManager.reservedKey(dir, finalName);
         }
     }
 
     // ───────────── 客户端请求入口 ─────────────
 
-    /** 开始上传：校验权限/扩展名/大小，确定最终文件名，创建临时文件。 */
+    /** 开始上传：校验权限/扩展名/大小，创建上传者子目录，确定最终文件名与临时文件。 */
     public static void handleStart(ServerPlayer player, int uploadId, String rawName, long size) {
         cleanupStaleSessions();
         if (!isOp(player)) {
@@ -105,23 +118,27 @@ public final class MediaUploadManager {
         try {
             File dir = MediaHttpServer.mediaDirectory();
             Files.createDirectories(dir.toPath());
+            // 上传者子目录（媒体目录/玩家名）：先建目录，文件最终落进去；
+            // 同一玩家多次上传复用同一文件夹
+            File userDir = new File(dir, sanitizeDirName(uploaderName(player)));
+            Files.createDirectories(userDir.toPath());
             // 同一玩家的旧会话（重试/超时残留）直接丢弃，避免临时文件泄漏
             Session old = sessions.remove(player.getUUID());
             if (old != null) {
                 abortSession(old);
             }
-            File tempDir = new File(dir, TEMP_DIR_NAME);
+            File tempDir = new File(dir, MediaHttpServer.TEMP_DIR_NAME);
             Files.createDirectories(tempDir.toPath());
             File temp = new File(tempDir, "upload-" + UUID.randomUUID() + ".part");
             OutputStream out = new BufferedOutputStream(new FileOutputStream(temp), 256 * 1024);
-            String finalName = resolveAvailableName(dir, name);
-            Session s = new Session(uploadId, temp, out, size, finalName);
+            String finalName = resolveAvailableName(userDir, name);
+            Session s = new Session(uploadId, temp, out, size, userDir, finalName);
             sessions.put(player.getUUID(), s);
-            reservedNames.add(finalName.toLowerCase(Locale.ROOT));
+            reservedNames.add(s.reservedKey());
             sendStatus(player, uploadId, MediaUploadStatusPayload.STATUS_READY, finalName,
                     "可以开始发送分块");
-            CinemaForYou.LOGGER.info("[CinemaForYou] {} 开始上传媒体: {} ({} 字节) → {}",
-                    player.getScoreboardName(), name, size, finalName);
+            CinemaForYou.LOGGER.info("[CinemaForYou] {} 开始上传媒体: {} ({} 字节) → {}/{}",
+                    player.getScoreboardName(), name, size, userDir.getName(), finalName);
         } catch (Throwable t) {
             fail(player, uploadId, "无法创建上传临时文件: " + t);
         }
@@ -152,7 +169,7 @@ public final class MediaUploadManager {
         }
     }
 
-    /** 结束上传：校验大小一致后落盘到媒体目录并登记添加者。 */
+    /** 结束上传：校验大小一致后落盘到该上传者的子目录并登记添加者。 */
     public static void handleFinish(ServerPlayer player, int uploadId) {
         Session s = validSession(player, uploadId);
         if (s == null) {
@@ -166,23 +183,23 @@ public final class MediaUploadManager {
             s.out.close();
         } catch (Throwable ignored) {}
         if (s.received != s.declaredSize) {
-            reservedNames.remove(s.finalName.toLowerCase(Locale.ROOT));
+            reservedNames.remove(s.reservedKey());
             deleteQuietly(s.temp);
             fail(player, uploadId, "接收字节数（" + s.received + "）与声明大小（"
                     + s.declaredSize + "）不一致，已丢弃");
             return;
         }
         try {
-            File dir = MediaHttpServer.mediaDirectory();
-            // 会话进行期间可能有人放进同名文件：再次确认重名，必要时换名
+            File dir = s.dir;
+            // 会话进行期间可能有人放进同名文件：在玩家子目录内再次确认重名，必要时换名
             if (new File(dir, s.finalName).exists()) {
-                reservedNames.remove(s.finalName.toLowerCase(Locale.ROOT));
+                reservedNames.remove(s.reservedKey());
                 String renamed = resolveAvailableName(dir, s.finalName);
-                reservedNames.add(renamed.toLowerCase(Locale.ROOT));
                 Session renamedSession = new Session(s.uploadId, s.temp, s.out, s.declaredSize,
-                        renamed);
+                        dir, renamed);
                 renamedSession.received = s.received;
                 s = renamedSession;
+                reservedNames.add(s.reservedKey());
             }
             File target = new File(dir, s.finalName);
             try {
@@ -190,20 +207,22 @@ public final class MediaUploadManager {
             } catch (Throwable atomicFailed) {
                 Files.move(s.temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
             }
-            reservedNames.remove(s.finalName.toLowerCase(Locale.ROOT));
+            reservedNames.remove(s.reservedKey());
+            // 媒体库列表/元数据以"相对路径"为键（玩家子目录内），owner 仍按上传者登记
+            String relKey = dir.getName() + "/" + s.finalName;
             ScreenManager mgr = CinemaForYou.screenManager;
             if (mgr != null) {
-                mgr.registerMediaOwner(s.finalName, player);
+                mgr.registerMediaOwner(relKey, player);
             }
             sendStatus(player, s.uploadId, MediaUploadStatusPayload.STATUS_SUCCESS, s.finalName,
                     "上传完成");
             player.sendSystemMessage(Component.literal(
-                    "§a[CinemaForYou] 上传完成: " + s.finalName + "（已保存到服务器媒体库）"));
+                    "§a[CinemaForYou] 上传完成: " + relKey + "（已保存到服务器媒体库）"));
             CinemaForYou.LOGGER.info("[CinemaForYou] {} 上传媒体完成: {} ({} 字节)",
-                    player.getScoreboardName(), s.finalName, s.declaredSize);
+                    player.getScoreboardName(), relKey, s.declaredSize);
         } catch (Throwable t) {
             deleteQuietly(s.temp);
-            reservedNames.remove(s.finalName.toLowerCase(Locale.ROOT));
+            reservedNames.remove(s.reservedKey());
             fail(player, s.uploadId, "保存文件失败: " + t);
         }
     }
@@ -216,7 +235,7 @@ public final class MediaUploadManager {
         try {
             s.out.close();
         } catch (Throwable ignored) {}
-        reservedNames.remove(s.finalName.toLowerCase(Locale.ROOT));
+        reservedNames.remove(s.reservedKey());
         deleteQuietly(s.temp);
         sendStatus(player, uploadId, MediaUploadStatusPayload.STATUS_CANCELLED, "", "已取消上传");
         player.sendSystemMessage(Component.literal(
@@ -246,6 +265,15 @@ public final class MediaUploadManager {
         return player.createCommandSourceStack().permissions().hasPermission(
                 new net.minecraft.server.permissions.Permission.HasCommandLevel(
                         net.minecraft.server.permissions.PermissionLevel.GAMEMASTERS));
+    }
+
+    /** 上传者名字（记分板名，兜底 UUID 前 8 位）——与登记 owner 用同一套取名。 */
+    private static String uploaderName(ServerPlayer player) {
+        try {
+            String n = player.getScoreboardName();
+            if (n != null && !n.isEmpty()) return n;
+        } catch (Throwable ignored) {}
+        return player.getUUID().toString().substring(0, 8);
     }
 
     /** 允许的媒体扩展名（服务器端独立校验，不信任客户端）。 */
@@ -281,7 +309,41 @@ public final class MediaUploadManager {
         return name;
     }
 
-    /** 重名时自动加序号（不改扩展名）：name.mp4 → name (1).mp4 → name (2).mp4 … */
+    /**
+     * 上传者子目录名安全化：去掉 Windows/Linux 非法字符（\ / : * ? " &lt; &gt; | 与控制字符）、
+     * 首尾空白与点，限制长度；结果为空（或与上传临时目录同名）时回退"未知玩家"。
+     * 该名字直接作为文件夹名，因此绝不能包含路径分隔符或 {@code ..}。
+     */
+    static String sanitizeDirName(String raw) {
+        String name = raw == null ? "" : raw.trim();
+        StringBuilder sb = new StringBuilder(name.length());
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if (c < 32 || c == 127 || "<>:\"|?*\\/".indexOf(c) >= 0) sb.append('_');
+            else sb.append(c);
+        }
+        // 去掉首尾的空格与点：Windows 不允许目录名以点/空格结尾，"."/".." 也会变空
+        name = sb.toString().replaceAll("^[. ]+", "").replaceAll("[. ]+$", "");
+        if (name.length() > DIR_NAME_MAX) {
+            name = name.substring(0, DIR_NAME_MAX).replaceAll("[. ]+$", "");
+        }
+        // Windows 保留设备名（CON/PRN/AUX/NUL/COM1-9/LPT1-9）不能作为目录名，加前缀规避
+        if (name.matches("(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])")) {
+            name = "_" + name;
+        }
+        if (name.isEmpty() || name.equals(MediaHttpServer.TEMP_DIR_NAME)) {
+            return FALLBACK_DIR_NAME;
+        }
+        return name;
+    }
+
+    /** 预留名唯一键：玩家子目录 + 文件名（小写）。 */
+    private static String reservedKey(File dir, String name) {
+        return (dir.getName() + "/" + name).toLowerCase(Locale.ROOT);
+    }
+
+    /** 重名时自动加序号（不改扩展名）：name.mp4 → name (1).mp4 → name (2).mp4 …
+     *  重名范围仅限该上传者子目录内。 */
     static String resolveAvailableName(File dir, String desired) {
         String base = desired;
         String ext = "";
@@ -292,7 +354,7 @@ public final class MediaUploadManager {
         }
         String candidate = desired;
         for (int i = 1; new File(dir, candidate).exists()
-                || reservedNames.contains(candidate.toLowerCase(Locale.ROOT)); i++) {
+                || reservedNames.contains(reservedKey(dir, candidate)); i++) {
             candidate = base + " (" + i + ")" + ext;
         }
         return candidate;
@@ -307,7 +369,7 @@ public final class MediaUploadManager {
             Session s = e.getValue();
             if (now - s.lastActiveMs > SESSION_TIMEOUT_MS) {
                 it.remove();
-                reservedNames.remove(s.finalName.toLowerCase(Locale.ROOT));
+                reservedNames.remove(s.reservedKey());
                 try {
                     s.out.close();
                 } catch (Throwable ignored) {}
@@ -317,7 +379,7 @@ public final class MediaUploadManager {
             }
         }
         try {
-            File tempDir = new File(MediaHttpServer.mediaDirectory(), TEMP_DIR_NAME);
+            File tempDir = new File(MediaHttpServer.mediaDirectory(), MediaHttpServer.TEMP_DIR_NAME);
             File[] children = tempDir.listFiles();
             if (children != null) {
                 for (File f : children) {
@@ -358,7 +420,7 @@ public final class MediaUploadManager {
     /** 会话异常中止：清理临时文件与占位并通知玩家。 */
     private static void abort(ServerPlayer player, Session s, String reason) {
         sessions.remove(player.getUUID(), s);
-        reservedNames.remove(s.finalName.toLowerCase(Locale.ROOT));
+        reservedNames.remove(s.reservedKey());
         try {
             s.out.close();
         } catch (Throwable ignored) {}
@@ -369,7 +431,7 @@ public final class MediaUploadManager {
 
     /** 静默丢弃会话（不做玩家提示）。 */
     private static void abortSession(Session s) {
-        reservedNames.remove(s.finalName.toLowerCase(Locale.ROOT));
+        reservedNames.remove(s.reservedKey());
         try {
             s.out.close();
         } catch (Throwable ignored) {}

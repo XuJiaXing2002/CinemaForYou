@@ -114,6 +114,8 @@ public final class MediaRemuxer {
     /**
      * 多屏版（总设置的广播播放）：一次为所有目标屏幕登记延后播放，只发一条提示；
      * 转封装完成后逐屏自动开播。
+     *
+     * @param fileName 媒体库相对路径（可为"玩家名/视频.ts"子目录路径）
      */
     public static boolean maybeDeferPlay(List<UUID> screenIds, ServerPlayer requester, String fileName) {
         try {
@@ -127,7 +129,7 @@ public final class MediaRemuxer {
             File src = new File(dir, fileName);
             if (!src.isFile()) return false;
             // 已有优化版：映射回退即可直接播放，无需转封装
-            if (findOptimized(dir, fileName) != null) return false;
+            if (findOptimized(src.getParentFile(), src.getName()) != null) return false;
 
             MinecraftServer srv = server();
             if (srv == null || !srv.isDedicatedServer()) {
@@ -176,11 +178,14 @@ public final class MediaRemuxer {
                 return;
             }
             File dir = src.getParentFile();
-            File workDir = new File(new File(dir, "tools"), "work");
+            // 转封装工作目录放在媒体目录之外（cinema/tools/work）：
+            // 媒体库递归扫描不会把中间产物当媒体文件列出来
+            File workDir = new File(new File(MediaHttpServer.mediaDirectory().getParentFile(), "tools"),
+                    "work");
             try {
                 Files.createDirectories(workDir.toPath());
             } catch (IOException ignored) {}
-            String base = baseName(fileName);
+            String base = baseName(src.getName());
 
             // 目标扩展名优先 mp4（+faststart 索引前置）；编码不兼容时回退 mkv
             for (String ext : new String[]{"mp4", "mkv"}) {
@@ -219,7 +224,9 @@ public final class MediaRemuxer {
                 finish(fileName, false, null, "§c转封装失败（编码与容器不兼容？），将直接播放原文件");
                 return;
             }
-            finish(fileName, true, finalTarget.getName(), null);
+            // 用媒体库相对路径回报（子目录文件保持"玩家名/文件"形式，供映射改写）
+            String rel = MediaHttpServer.relativeMediaPath(finalTarget);
+            finish(fileName, true, rel == null ? finalTarget.getName() : rel, null);
         } catch (Throwable t) {
             CinemaForYou.LOGGER.warn("[CinemaForYou] 转封装任务异常: {}", t.toString());
             finish(fileName, false, null, "§c转封装出错，将直接播放原文件");

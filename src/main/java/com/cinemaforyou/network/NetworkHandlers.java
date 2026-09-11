@@ -314,18 +314,13 @@ public final class NetworkHandlers {
                             return;
                         }
                         String name = payload.name() == null ? "" : payload.name();
-                        if (name.isEmpty() || name.contains("/") || name.contains("\\")) {
-                            player.sendSystemMessage(Component.literal(
-                                    "§c[CinemaForYou] 非法的文件名"));
-                            return;
-                        }
                         try {
-                            java.io.File dir = com.cinemaforyou.manager.MediaHttpServer.mediaDirectory();
-                            java.io.File target = new java.io.File(dir, name);
-                            if (!target.getCanonicalFile().toPath()
-                                    .startsWith(dir.getCanonicalFile().toPath())) {
+                            // 支持"玩家名/文件"子目录相对路径；非法/越界（含上传临时目录）一律拒绝
+                            java.io.File target =
+                                    com.cinemaforyou.manager.MediaHttpServer.resolveMediaFile(name);
+                            if (target == null) {
                                 player.sendSystemMessage(Component.literal(
-                                        "§c[CinemaForYou] 不允许删除媒体目录外的文件"));
+                                        "§c[CinemaForYou] 非法的文件名"));
                                 return;
                             }
                             if (!target.isFile()) {
@@ -336,7 +331,9 @@ public final class NetworkHandlers {
                             if (target.delete()) {
                                 ScreenManager mgr = CinemaForYou.screenManager;
                                 if (mgr != null) {
-                                    mgr.forgetMedia(name);
+                                    String key = com.cinemaforyou.manager.MediaHttpServer
+                                            .relativeMediaPath(target);
+                                    mgr.forgetMedia(key == null ? name : key);
                                 }
                                 player.sendSystemMessage(Component.literal(
                                         "§c[CinemaForYou] 已删除服务器文件: " + name
