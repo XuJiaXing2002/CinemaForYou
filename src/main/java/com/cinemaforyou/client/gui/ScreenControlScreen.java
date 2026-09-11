@@ -72,6 +72,8 @@ public class ScreenControlScreen
 extends ScrollableSettingsScreen {
     private static final int[] RESOLUTIONS = new int[]{360, 480, 720, 1080, 1440, 2160};
     private static final int HEADER_H = 76;
+    /** 跳转目标超过片尾时，钳制到「时长 − 本余量」而不是紧贴时长（详见 {@link #seekToMinute(int)}）。 */
+    private static final long SEEK_END_MARGIN_MS = 1000L;
     /** 当前控制的屏幕（可由「当前屏幕选择」切换：切换后本页所有功能作用于新选中的屏幕）。 */
     private UUID screenId;
     /** 打开「当前屏幕选择」前的选择结果（lastControlScreenId）；返回后若变化说明用户点了新屏幕。 */
@@ -388,16 +390,13 @@ extends ScrollableSettingsScreen {
 
     /**
      * 打开「跳转到~分钟」输入框：复用通用数值输入界面 {@link InputValueScreen}（与「音频延迟」完全同一套用法），
-     * 初始值为当前播放位置的分钟数；非数字/负数直接忽略并提示（沿用既有的 try/catch 校验风格），
-     * 超出视频时长的情况由服务端/播放器按既有 seek 行为处理。
+     * 初始值留空（不预填当前分钟数，由用户直接输入目标分钟数）；非数字/负数直接忽略并提示
+     * （沿用既有的 try/catch 校验风格），超出视频时长的情况按"正常播完"处理（见 {@link #seekToMinute(int)}）。
      */
     private void openJumpMinuteEditor() {
-        VideoPlayer player = this.currentPlayer();
-        long pos = player != null ? player.getPositionMs() : 0L;
-        int curMinute = (int)Math.max(0L, pos / 60000L);
         this.openChild(new InputValueScreen(
-                "跳转到指定分钟（输入分钟数，如 30 = 第 30 分钟）\n超出视频时长时按播放器既有 seek 行为处理",
-                String.valueOf(curMinute), 6,
+                "跳转到指定分钟（输入分钟数，如 30 = 第 30 分钟）\n超出视频时长时按正常播完处理",
+                "", 6,
                 v -> {
                     int minutes;
                     try {
@@ -417,12 +416,32 @@ extends ScrollableSettingsScreen {
     /**
      * 跳转到指定分钟：目标毫秒 = 分钟 × 60 × 1000；用「目标位置 − 当前播放位置」的差值
      * 复用 {@link #seekRelative(long)}（与四个快进快退按钮同一套相对 seek，不改协议）。
+     *
+     * <p>越界处理：目标超过视频总时长时钳到「时长 − {@link #SEEK_END_MARGIN_MS}」，
+     * 让播放器自然解码到结尾并触发既有「播完」逻辑链（循环/自动下一项/申请授权播完即停/
+     * 播完暂停、停止），而不是从开头重播。绝不能把越界值原样发出：
+     * 服务端 {@code ScreenManager.seek} 只钳负数不钳上限，越界位置同步到客户端后
+     * {@code VideoPlayer.applySeek} 对「目标 ≥ 时长」按"从头播放"处理（就是"从开头加速重播"
+     * 的根源）；且客户端同步时会再加网络延迟（{@code ClientScreenManager} 的 expectedPos），
+     * 故余量取 1s 而非紧贴片尾（同时满足播放器「位置 ≥ 时长 − 1500ms」的临近结尾判定，
+     * EOF 能被及时识别）。时长未知（0/未就绪）时不发送跳转，仅在聊天栏提示。
      */
     private void seekToMinute(int minutes) {
         long target = (long)minutes * 60L * 1000L;
         VideoPlayer player = this.currentPlayer();
-        long base = player != null ? player.getPositionMs() : 0L;
-        this.seekRelative(target - base);
+        long duration = player != null ? player.getDurationMs() : 0L;
+        if (duration <= 0L) {
+            // 时长未就绪（解码器刚启动/元数据未读到/无播放器）：无法判断是否越界，
+            // 宁可不跳也不发可能被当"越界从头"处理的位置
+            this.hint("暂时拿不到视频时长，请稍后再试");
+            return;
+        }
+        // 钳制公式：min(目标, 时长 − 余量)；短片（时长 < 2×余量）时余量取时长一半，
+        // 避免钳成 0 反而触发"回开头"分支
+        long margin = Math.min(SEEK_END_MARGIN_MS, Math.max(0L, duration / 2L));
+        long safeTarget = Math.min(target, Math.max(0L, duration - margin));
+        long base = player.getPositionMs();
+        this.seekRelative(safeTarget - base);
     }
 
     private int addSettingRow(String label, String value, int cx, int y, UnaryOperator<CinemaScreen> increase, UnaryOperator<CinemaScreen> decrease) {
