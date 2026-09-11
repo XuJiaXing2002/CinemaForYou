@@ -30,6 +30,7 @@
  */
 package com.cinemaforyou.client.gui;
 
+import com.cinemaforyou.CinemaForYouClient;
 import com.cinemaforyou.client.ClientScreenManager;
 import com.cinemaforyou.client.config.ClientConfig;
 import com.cinemaforyou.client.gui.HistoryScreen;
@@ -63,7 +64,10 @@ public class ScreenControlScreen
 extends ScrollableSettingsScreen {
     private static final int[] RESOLUTIONS = new int[]{360, 480, 720, 1080, 1440, 2160};
     private static final int HEADER_H = 78;
-    private final UUID screenId;
+    /** 当前控制的屏幕（可由「当前屏幕选择」切换：切换后本页所有功能作用于新选中的屏幕）。 */
+    private UUID screenId;
+    /** 打开「当前屏幕选择」前的选择结果（lastControlScreenId）；返回后若变化说明用户点了新屏幕。 */
+    private String targetBeforePick = null;
 
     public ScreenControlScreen(UUID screenId) {
         super(Component.translatable("gui.cinemaforyou.control.title"));
@@ -82,7 +86,37 @@ extends ScrollableSettingsScreen {
         return ClientScreenManager.get().getPlayer(this.screenId);
     }
 
+    /**
+     * 应用「当前屏幕选择」的选择结果：与总设置里"目标屏幕"相互独立——
+     * 选择结果保存在 {@link ClientConfig#lastControlScreenId}（由 TargetSearchScreen 点选时写入），
+     * 这里读回并把本页控制目标切到该屏幕；仅当用户真的点选了新屏幕才切换，直接返回则保持不变。
+     */
+    private void applyPickedTarget() {
+        if (this.targetBeforePick == null) {
+            return;
+        }
+        String before = this.targetBeforePick;
+        this.targetBeforePick = null;
+        ClientConfig cfg = CinemaForYouClient.clientConfig;
+        if (cfg == null) {
+            return;
+        }
+        String picked = cfg.lastControlScreenId;
+        if (picked == null || picked.isEmpty() || picked.equals(before)) {
+            return; // 未点选（直接返回）：保持当前屏幕
+        }
+        for (CinemaScreen s : ClientScreenManager.get().allScreens().values()) {
+            if (s.id().toString().equals(picked)) {
+                this.screenId = s.id(); // 切换后本页所有操作（播放/设置/移动/子页面）都作用于新屏幕
+                this.hint("已切换当前屏幕: " + s.displayName() + " @ " + s.center().toShortString());
+                return;
+            }
+        }
+    }
+
     protected void init() {
+        // 从屏幕搜索选择器返回时，按选择结果切换本页当前屏幕
+        this.applyPickedTarget();
         this.rebuildWidgets();
     }
 
@@ -128,8 +162,17 @@ extends ScrollableSettingsScreen {
         this.addRenderableWidget(Button.builder(Component.literal("\ud83d\udd17 \u8f93\u5165\u94fe\u63a5"), btn -> this.openChild(new ScreenLinkInputScreen(this.screenId))).bounds(left, this.ry(y += rowH), sw, 20).build());
         this.addRenderableWidget(Button.builder(Component.literal("\ud83d\udcc2 \u672c\u5730\u89c6\u9891"), btn -> this.openChild(new VideoLibraryScreen(this.screenId))).bounds(left + sw + 2, this.ry(y), sw, 20).build());
         this.addRenderableWidget(Button.builder(Component.literal("\ud83d\udd58 \u64ad\u653e\u5386\u53f2"), btn -> this.openChild(new HistoryScreen(this.screenId))).bounds(left + 2 * (sw + 2), this.ry(y), sw, 20).build());
+        // ── 当前屏幕选择：紧挨「服务器媒体库」上方，与下方按钮同 x/同宽/同高 ──
+        // 按钮文字显示屏幕名 + 坐标，点击打开屏幕搜索选择器
+        // （TargetSearchScreen 点选后写入 lastControlScreenId 并返回本页），返回后本页切换到该屏幕。
+        String curScreenLabel = screen.displayName() + " @ " + screen.center().toShortString();
+        this.addRenderableWidget(Button.builder(Component.literal("🎯 当前屏幕选择: " + curScreenLabel + "（点击选择）"), btn -> {
+            ClientConfig cfg = CinemaForYouClient.clientConfig;
+            this.targetBeforePick = cfg != null ? cfg.lastControlScreenId : null;
+            this.openChild(new TargetSearchScreen());
+        }).bounds(left, this.ry(y += rowH), w, 20).build());
         this.addRenderableWidget(Button.builder(Component.literal("\ud83d\udda5 \u670d\u52a1\u5668\u5a92\u4f53\u5e93\uff08\u670d\u52a1\u5668 cinema/videos\uff09"), btn -> this.openChild(new ServerMediaScreen(this.screenId))).bounds(left, this.ry(y += rowH), w, 20).build());
-        this.addRenderableWidget(Button.builder(Component.literal("\ud83d\udccb \u64ad\u653e\u961f\u5217\u2026\uff08\u6b64\u5c4f\uff09"), btn -> this.openChild(new ScreenQueueManagerScreen(this.screenId))).bounds(left, this.ry(y += rowH), w, 20).build());
+        this.addRenderableWidget(Button.builder(Component.literal("\u64ad\u653e\u961f\u5217"), btn -> this.openChild(new ScreenQueueManagerScreen(this.screenId))).bounds(left, this.ry(y += rowH), w, 20).build());
         this.addRenderableWidget(Button.builder(Component.literal("\u2699 \u58f0\u97f3\u4e0e\u64ad\u653e\u8bbe\u7f6e\u2026\uff08\u8303\u56f4/\u8870\u51cf/\u64ad\u5b8c\u884c\u4e3a\uff09"), btn -> this.openChild(new ScreenSoundSettingsScreen(this.screenId))).bounds(left, this.ry(y += rowH), w, 20).build());
         y += rowH + 4;
         y = this.stepRow(cx, y, "\u4eae\u5ea6", screen.brightnessPercent() + "%", (d, s) -> s.withSettings(ScreenControlScreen.clamp(s.brightnessPercent() + d, 0, 100), s.volumePercent(), s.resolutionHeight(), s.displayScalePercent()));

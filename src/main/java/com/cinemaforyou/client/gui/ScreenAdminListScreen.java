@@ -33,6 +33,9 @@ public class ScreenAdminListScreen extends ScrollableSettingsScreen {
     private static final int ENTRY_H = 86;
     private int page = 0;
     private EditBox searchBox;
+    /** 二次确认状态（与本地视频库一致的机制）：待删除屏幕 id / 是否已请求删除全部。 */
+    private String pendingDeleteId = null;
+    private boolean pendingDeleteAll = false;
 
     public ScreenAdminListScreen() {
         super(Component.literal("屏幕列表管理"));
@@ -104,9 +107,22 @@ public class ScreenAdminListScreen extends ScrollableSettingsScreen {
 
         // 底部固定操作区（与播放历史一致：清空类全宽在上，分页+返回在底行）
         int bottom = this.height - 32 + scrollY;
-        addRenderableWidget(Button.builder(Component.literal("🗑 删除我创建的全部屏幕"),
-                btn -> ClientNetworkHandlers.sendAdminAction(
-                        ScreenAdminActionPayload.ACTION_DELETE_ALL_MINE, UUID.randomUUID(), "")
+        addRenderableWidget(Button.builder(
+                Component.literal(pendingDeleteAll ? "§c⚠确认删除我创建的全部屏幕?" : "🗑 删除我创建的全部屏幕"),
+                btn -> {
+                    // 全部删除：两次点击确认（与本地视频库删除同一套机制）
+                    if (!pendingDeleteAll) {
+                        pendingDeleteAll = true;
+                        Minecraft.getInstance().player.sendSystemMessage(Component.literal(
+                                "§c[CinemaForYou] 将删除我创建的全部屏幕（不可恢复），再点一次确认"));
+                        rebuildWidgets();
+                        return;
+                    }
+                    pendingDeleteAll = false;
+                    ClientNetworkHandlers.sendAdminAction(
+                            ScreenAdminActionPayload.ACTION_DELETE_ALL_MINE, UUID.randomUUID(), "");
+                    rebuildWidgets();
+                }
         ).bounds(left, ry(bottom - 26), w, 20).build());
         final int tPages = totalPages;
         addPager(left, bottom, page, tPages,
@@ -170,9 +186,25 @@ public class ScreenAdminListScreen extends ScrollableSettingsScreen {
                                 v -> ClientNetworkHandlers.sendAdminAction(
                                         ScreenAdminActionPayload.ACTION_RENAME, s.id(), v)))
                 ).bounds(left, y + 64, half, 20).build());
-                addRenderableWidget(Button.builder(Component.literal("🗑 删除"),
-                        btn -> ClientNetworkHandlers.sendAdminAction(
-                                ScreenAdminActionPayload.ACTION_DELETE, s.id(), ""))
+                addRenderableWidget(Button.builder(
+                        Component.literal(s.id().toString().equals(pendingDeleteId)
+                                ? "§c⚠确认删除?" : "🗑 删除"),
+                        btn -> {
+                            // 单屏删除：两次点击确认（与本地视频库删除同一套机制）
+                            String id = s.id().toString();
+                            if (!id.equals(pendingDeleteId)) {
+                                pendingDeleteId = id;
+                                Minecraft.getInstance().player.sendSystemMessage(Component.literal(
+                                        "§c[CinemaForYou] 将删除屏幕「" + s.displayName()
+                                                + "」（不可恢复），再点一次确认"));
+                                rebuildWidgets();
+                                return;
+                            }
+                            pendingDeleteId = null;
+                            ClientNetworkHandlers.sendAdminAction(
+                                    ScreenAdminActionPayload.ACTION_DELETE, s.id(), "");
+                            rebuildWidgets();
+                        })
                         .bounds(left + half + 6, y + 64, half, 20).build());
             } else {
                 addRenderableWidget(new GuiTextLabel(cx, y + 67, w, 12,

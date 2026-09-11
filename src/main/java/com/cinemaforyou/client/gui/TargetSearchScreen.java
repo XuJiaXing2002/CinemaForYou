@@ -16,8 +16,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 目标屏幕搜索选择器：按名称/创建者搜索，点选后作为"目标屏幕"
- * （供总设置里的队列/播完行为等使用），并返回上级界面。
+ * 屏幕搜索选择器：按名称/创建者搜索，点选后写入屏幕控制页的
+ * {@link ClientConfig#lastControlScreenId} 并返回上级界面（控制页据此切换当前屏幕）。
  */
 public class TargetSearchScreen extends ScrollableSettingsScreen {
 
@@ -28,7 +28,7 @@ public class TargetSearchScreen extends ScrollableSettingsScreen {
     private EditBox searchBox;
 
     public TargetSearchScreen() {
-        super(Component.literal("选择目标屏幕"));
+        super(Component.literal("选择屏幕"));
     }
 
     @Override
@@ -53,7 +53,7 @@ public class TargetSearchScreen extends ScrollableSettingsScreen {
         int y = 8;
 
         addRenderableWidget(new GuiTextLabel(cx, ry(y), w, 12,
-                "§e选择目标屏幕（搜索名称或创建者）", GuiTextLabel.Align.CENTER, GuiTextLabel.YELLOW));
+                "§e选择屏幕（搜索名称或创建者）", GuiTextLabel.Align.CENTER, GuiTextLabel.YELLOW));
         y += 15;
 
         searchBox = new EditBox(this.font, left, ry(y), w - 62, 20,
@@ -112,15 +112,13 @@ public class TargetSearchScreen extends ScrollableSettingsScreen {
     private void pick(CinemaScreen s) {
         ClientConfig cfg = CinemaForYouClient.clientConfig;
         if (cfg != null) {
-            cfg.lastTargetScreenId = s.id().toString();
+            cfg.lastControlScreenId = s.id().toString();
             cfg.save();
         }
         if (Minecraft.getInstance().player != null) {
             Minecraft.getInstance().player.sendSystemMessage(Component.literal(
-                    "§a[CinemaForYou] 目标屏幕: §e" + s.displayName()));
+                    "§a[CinemaForYou] 已选择屏幕: §e" + s.displayName()));
         }
-        // 让上级设置页刷新后再返回
-        CinemaSettingsScreen.refreshOnReturn();
         GuiNav.back(this);
     }
 

@@ -2,8 +2,10 @@ package com.cinemaforyou.client.video;
 
 import com.cinemaforyou.client.audio.AudioPlayer;
 import com.cinemaforyou.client.network.ClientNetworkHandlers;
+import com.cinemaforyou.client.network.QueueClient;
 import com.cinemaforyou.client.render.VideoFrameTexture;
 import com.cinemaforyou.data.CinemaScreen;
+import com.cinemaforyou.network.QueueEntry;
 import com.cinemaforyou.network.ScreenActionPayload;
 import com.mojang.blaze3d.platform.NativeImage;
 import com.mojang.blaze3d.systems.RenderSystem;
@@ -1613,15 +1615,20 @@ public class VideoPlayer {
                     ClientNetworkHandlers.sendAction(ScreenActionPayload.stop(screenId));
                 }
             }
-            case 2 -> { // 自动播放下一个（队列）
-                java.util.List<String> queue = cfg.screenPlaylist
-                        .getOrDefault(screenId.toString(), java.util.List.of());
+            case 2 -> { // 自动播放下一个（服务端队列，客户端读只读镜像）
+                java.util.List<QueueEntry> queue = QueueClient.entriesFor(screenId);
                 if (queue.isEmpty()) {
                     ClientNetworkHandlers.sendAction(ScreenActionPayload.stop(screenId));
                     return;
                 }
-                int idx = queue.indexOf(sourceUrl);
-                String next = queue.get((idx + 1) % queue.size());
+                int idx = -1;
+                for (int i = 0; i < queue.size(); i++) {
+                    if (queue.get(i).url().equals(sourceUrl)) {
+                        idx = i;
+                        break;
+                    }
+                }
+                String next = queue.get((idx + 1) % queue.size()).url();
                 ClientNetworkHandlers.sendAction(ScreenActionPayload.play(screenId, next));
             }
             case 3 -> { // 播完暂停：保留末帧，控制界面点"播放"会从头重播

@@ -10,9 +10,14 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.Reader;
-import java.io.Writer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 客户端配置（JSON 文件，位于 {@code config/cinemaforyou-client.json}）。
@@ -133,8 +138,39 @@ public class ClientConfig {
     /** "播完行为"全局默认：0=停止 1=循环本片 2=自动播放下一个 3=播完暂停。 */
     public int defaultPlayMode = 0;
 
-    /** 每屏播放队列（视频源 URL，按顺序自动播放；键为屏幕 UUID）。 */
+    /**
+     * 【旧版遗留】每屏本机播放队列（视频源 URL；键为屏幕 UUID）。
+     *
+     * <p>播放队列已迁移到服务端统一管理（服务端为唯一数据源），此字段仅用于
+     * 首次同步时把用户已排的本机队列上传迁移；不再在代码中读写。
+     */
     public java.util.Map<String, java.util.List<String>> screenPlaylist = new java.util.HashMap<>();
+
+    /**
+     * 【旧版遗留】每屏队列条目的附加信息（与 {@link #screenPlaylist} 同屏同下标一一对应：
+     * 加队列的玩家名 + 加入时间毫秒）。仅用于旧队列迁移上传。
+     */
+    public java.util.Map<String, java.util.List<QueueItem>> screenPlaylistInfo = new java.util.HashMap<>();
+
+    /** 旧版本机队列是否已迁移上传到服务端（true 后不再尝试上传）。 */
+    public boolean queueMigratedToServer = false;
+
+    /**
+     * 服务端播放队列的客户端持久化副本（键 = 屏幕 UUID 字符串，值为该屏队列条目）。
+     *
+     * <p>服务端仍是队列唯一数据源：本字段只作本地缓存，重启游戏后服务端队列同步到达前，
+     * 队列界面先显示这份副本；服务端全量广播到达后整体覆盖并落盘。客户端乐观更新
+     * （删/清空/上移下移）也会即时更新并落盘。旧配置无此字段时为空 Map。
+     */
+    public java.util.Map<String, java.util.List<QueueItem>> queueMirror = new java.util.HashMap<>();
+
+    /**
+     * 全局播放队列的客户端持久化副本（总设置入口的「全局播放队列管理」）。
+     *
+     * <p>与 {@link #queueMirror} 同一套"服务端权威 + 本地只读副本"模型：服务端仍是唯一数据源，
+     * 本字段只作本地缓存。全局队列条目不参与自动连播，手动点击才向所有屏幕发播放申请。
+     */
+    public java.util.List<QueueItem> globalQueueMirror = new java.util.ArrayList<>();
 
     /** 链接备注（URL → 玩家自命名，历史/队列显示时优先于标题与链接）。 */
     public java.util.Map<String, String> urlNotes = new java.util.HashMap<>();
@@ -145,8 +181,15 @@ public class ClientConfig {
     /** 播放历史（全局，最新在前，最多 100 条）。 */
     public java.util.List<HistoryItem> history = new java.util.ArrayList<>();
 
-    /** V 设置中"目标屏幕"（最近一次管理/播放用的屏幕 UUID，空串 = 自动选第一个）。 */
+    /**
+     * 【旧版遗留】总设置曾经的"目标屏幕"（空串 = 未选择）。
+     *
+     * <p>总设置已改为"播放到所有屏幕"，代码不再引用此字段；保留仅为兼容旧配置文件。
+     */
     public String lastTargetScreenId = "";
+
+    /** 屏幕控制页"当前屏幕选择"（空串 = 未选择）。 */
+    public String lastControlScreenId = "";
 
     /** 一条播放历史记录。 */
     public static class HistoryItem {
@@ -159,6 +202,21 @@ public class ClientConfig {
         public HistoryItem(String url, String name, long time) {
             this.url = url;
             this.name = name;
+            this.time = time;
+        }
+    }
+
+    /** 一条队列条目的附加信息（URL 之外：加队列的玩家名 + 加入时间毫秒）。 */
+    public static class QueueItem {
+        public String url = "";
+        public String player = "";
+        public long time = 0L;
+
+        public QueueItem() {}
+
+        public QueueItem(String url, String player, long time) {
+            this.url = url == null ? "" : url;
+            this.player = player == null ? "" : player;
             this.time = time;
         }
     }
@@ -284,12 +342,6 @@ public class ClientConfig {
         save();
     }
 
-    /** 某屏的播放队列（不存在返回空列表）。 */
-    public java.util.List<String> queueFor(String screenId) {
-        java.util.List<String> q = screenPlaylist.get(screenId);
-        return q != null ? q : java.util.Collections.emptyList();
-    }
-
     /** 某屏实际生效的播完行为（0/未设置 = 跟随全局默认）。 */
     public int playModeFor(String screenId) {
         Integer m = screenPlayMode.get(screenId);
@@ -307,25 +359,6 @@ public class ClientConfig {
     public void setPlayMode(String screenId, int mode) {
         if (screenPlayMode == null) screenPlayMode = new java.util.HashMap<>();
         screenPlayMode.put(screenId, Math.max(0, Math.min(3, mode)));
-        save();
-    }
-
-    /** 给某屏队列追加一条（去重）并保存。 */
-    public void addToQueue(String screenId, String url) {
-        if (url == null || url.isEmpty()) return;
-        if (screenPlaylist == null) screenPlaylist = new java.util.HashMap<>();
-        java.util.List<String> q = screenPlaylist.computeIfAbsent(screenId, k -> new java.util.ArrayList<>());
-        if (!q.contains(url)) {
-            q.add(url);
-        }
-        save();
-    }
-
-    /** 清空某屏队列并保存。 */
-    public void clearQueue(String screenId) {
-        if (screenPlaylist != null) {
-            screenPlaylist.remove(screenId);
-        }
         save();
     }
 
@@ -352,14 +385,18 @@ public class ClientConfig {
         return instance;
     }
 
+    /** 配置文件路径（config/cinemaforyou-client.json）。 */
+    private static Path configFile() {
+        return FabricLoader.getInstance().getConfigDir().resolve("cinemaforyou-client.json");
+    }
+
     /** 加载配置（文件不存在则生成默认）。在客户端初始化时调用。 */
     public static ClientConfig load() {
-        Path configDir = FabricLoader.getInstance().getConfigDir();
-        Path file = configDir.resolve("cinemaforyou-client.json");
+        Path file = configFile();
 
         if (!Files.exists(file)) {
             instance = new ClientConfig();
-            save(instance, file);
+            writeJson(GSON.toJson(instance), file);
             LOGGER.info("[CinemaForYou] 已生成默认客户端配置: {}", file);
             return instance;
         }
@@ -384,6 +421,17 @@ public class ClientConfig {
             if (instance.screenAudioLatencyMs == null) instance.screenAudioLatencyMs = new java.util.HashMap<>();
             if (instance.defaultPlayMode < 0 || instance.defaultPlayMode > 3) instance.defaultPlayMode = 0;
             if (instance.screenPlaylist == null) instance.screenPlaylist = new java.util.HashMap<>();
+            if (instance.screenPlaylistInfo == null) instance.screenPlaylistInfo = new java.util.HashMap<>();
+            // 本地队列副本：旧配置无此字段 → 空 Map（不报错）；并清理损坏的空列表/空条目
+            if (instance.queueMirror == null) instance.queueMirror = new java.util.HashMap<>();
+            instance.queueMirror.values().removeIf(java.util.Objects::isNull);
+            for (java.util.List<QueueItem> mirrorItems : instance.queueMirror.values()) {
+                mirrorItems.removeIf(java.util.Objects::isNull);
+            }
+            // 全局播放队列本地副本：旧配置无此字段 → 空列表；清理空条目/空 URL
+            if (instance.globalQueueMirror == null) instance.globalQueueMirror = new java.util.ArrayList<>();
+            instance.globalQueueMirror.removeIf(java.util.Objects::isNull);
+            instance.globalQueueMirror.removeIf(i -> i.url == null || i.url.isEmpty());
             if (instance.urlNotes == null) instance.urlNotes = new java.util.HashMap<>();
             if (instance.urlTitles == null) instance.urlTitles = new java.util.HashMap<>();
             // 清理旧版编码错误缓存的乱码标题（含 U+FFFD 替换符），触发重新抓取
@@ -398,18 +446,137 @@ public class ClientConfig {
         return instance;
     }
 
-    /** 保存当前配置到 config/cinemaforyou-client.json（设置界面调用）。
-     *  同步：后台标题线程与 UI 线程可能同时写配置。 */
-    public synchronized void save() {
-        Path file = FabricLoader.getInstance().getConfigDir().resolve("cinemaforyou-client.json");
-        save(this, file);
+    // ───────────── 异步 / 节流落盘状态 ─────────────
+
+    /** 落盘节流间隔（毫秒）：短时间内的多次 {@link #save()} 合并，最多每 500ms 真正写盘一次。 */
+    private static final long SAVE_THROTTLE_MS = 500;
+
+    /**
+     * 实际写盘的单线程调度器（守护线程）。
+     *
+     * <p>渲染线程 / 网络线程 / 后台标题线程调用 {@link #save()} 时只「标记脏 + 调度」，
+     * 序列化与磁盘 IO 全部在 {@code CinemaForYou-Config-Save} 线程完成，不阻塞调用线程。
+     */
+    private static final ScheduledExecutorService SAVE_EXECUTOR =
+            Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "CinemaForYou-Config-Save");
+                t.setDaemon(true);
+                return t;
+            });
+
+    /** 落盘状态锁：只保护下面 3 个状态字段，持锁时间极短（不做序列化与 IO）。 */
+    private final Object saveStateLock = new Object();
+
+    /** 写盘互斥锁：序列化成字符串与写文件都在此锁内，保证多个写盘请求互斥、快照一致。 */
+    private final Object saveWriteLock = new Object();
+
+    /** 存在尚未写盘的修改。 */
+    private boolean dirty = false;
+
+    /** 已有一个延后的写盘任务在排队（窗口内的后续 save() 合并到该任务）。 */
+    private boolean saveScheduled = false;
+
+    /** 上次真正写盘的时间戳（毫秒），用于计算节流延迟。 */
+    private long lastSaveAtMs = 0L;
+
+    /**
+     * 保存当前配置（异步 + 节流）。方法签名与旧版同步版一致，调用方无需改动。
+     *
+     * <p>本方法立即返回、不做磁盘 IO：只标记「脏」并按节流窗口调度一次后台写盘，
+     * 最多每 {@link #SAVE_THROTTLE_MS} 毫秒真正写文件一次（窗口内多次调用自动合并），
+     * 避免 GUI 操作、队列同步广播等高频调用造成卡顿。
+     *
+     * <p>需要立即落盘的场景（断线 / 退出）请调用 {@link #flush()}。
+     *
+     * <p>线程安全：GUI 线程、网络线程、后台标题线程均可并发调用。
+     */
+    public void save() {
+        long delay;
+        synchronized (saveStateLock) {
+            dirty = true;
+            if (saveScheduled) return;   // 已有排队任务：合并到它，不重复调度
+            saveScheduled = true;
+            delay = Math.max(0L, SAVE_THROTTLE_MS - (System.currentTimeMillis() - lastSaveAtMs));
+        }
+        try {
+            SAVE_EXECUTOR.schedule(this::scheduledSave, delay, TimeUnit.MILLISECONDS);
+        } catch (RejectedExecutionException e) {
+            // 守护线程执行器不可用（理论不会发生）：退化为同步写，避免丢改动
+            synchronized (saveStateLock) {
+                saveScheduled = false;
+            }
+            LOGGER.warn("[CinemaForYou] 配置写盘任务无法调度，改为同步保存", e);
+            writeNow();
+        }
     }
 
-    private static void save(ClientConfig config, Path file) {
+    /**
+     * 立即同步落盘（客户端退出 / 断开连接时由生命周期钩子调用）。
+     *
+     * <p>清零脏标记并立刻写一次当前最新快照；排队中的节流任务运行时检测到不脏会直接跳过。
+     * 写盘异常只记日志，不向调用方抛出。
+     */
+    public void flush() {
+        synchronized (saveStateLock) {
+            dirty = false;
+        }
+        writeNow();
+    }
+
+    /** 后台节流任务入口：若期间已被 {@link #flush()} 落盘则跳过，避免重复写。 */
+    private void scheduledSave() {
+        synchronized (saveStateLock) {
+            saveScheduled = false;
+            if (!dirty) return;
+        }
+        writeNow();
+    }
+
+    /**
+     * 真正写盘：持 {@link #saveWriteLock} 先把配置序列化成字符串快照，再写入文件。
+     *
+     * <p>先清脏再序列化：序列化期间其它线程的 {@link #save()} 会把脏标记重新置真，
+     * 保证并发修改不会漏写（最多延后一个节流窗口再写一次）。
+     */
+    private void writeNow() {
+        synchronized (saveWriteLock) {
+            synchronized (saveStateLock) {
+                dirty = false;
+            }
+            String json;
+            try {
+                // 持写锁序列化：与 flush() / 其它写盘任务互斥，得到一致的字符串快照，
+                // 不会出现多个写盘线程交叉写出半更新 JSON 的情况
+                json = GSON.toJson(this);
+            } catch (Throwable t) {
+                LOGGER.error("[CinemaForYou] 客户端配置序列化失败，本次不落盘", t);
+                synchronized (saveStateLock) {
+                    dirty = true;   // 保留脏标记，下次 save()/flush() 重试
+                }
+                return;
+            }
+            synchronized (saveStateLock) {
+                lastSaveAtMs = System.currentTimeMillis();
+            }
+            writeJson(json, configFile());
+        }
+    }
+
+    /**
+     * 把 JSON 字符串写入配置文件：先写同名 {@code .tmp} 临时文件，再原子替换目标文件，
+     * 避免写到一半崩溃/进程被杀导致配置损坏。异常只记日志，不向调用方抛出。
+     */
+    private static void writeJson(String json, Path file) {
         try {
             Files.createDirectories(file.getParent());
-            try (Writer writer = Files.newBufferedWriter(file)) {
-                GSON.toJson(config, writer);
+            Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
+            Files.writeString(tmp, json, StandardCharsets.UTF_8);
+            try {
+                Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE);
+            } catch (IOException atomicFailed) {
+                // 个别文件系统 / 安全软件占用时不支持原子移动：退化为普通覆盖
+                Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING);
             }
         } catch (IOException e) {
             LOGGER.error("[CinemaForYou] 客户端配置保存失败", e);

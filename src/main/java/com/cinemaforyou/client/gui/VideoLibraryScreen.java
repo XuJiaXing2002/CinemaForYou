@@ -1,7 +1,7 @@
 package com.cinemaforyou.client.gui;
 
 import com.cinemaforyou.CinemaForYouClient;
-import com.cinemaforyou.client.config.ClientConfig;
+import com.cinemaforyou.client.network.ClientNetworkHandlers;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
@@ -17,7 +17,13 @@ import java.util.UUID;
 
 /**
  * 本地视频库：浏览 {@code cinema/videos}（及配置的本地视频目录）中的媒体文件，
- * 可【立即播放】到目标屏幕，或【加入该屏播放队列】供"自动播放下一个"使用。
+ * 可【立即播放】，或【加入播放队列】供"自动播放下一个"使用。
+ *
+ * <ul>
+ *   <li>无参构造：总设置入口——向所有屏幕的 owner 发送播放申请（首次点击提示确认，
+ *       再点一次才下发）；「＋队列」加入全局播放队列（不参与自动连播）；</li>
+ *   <li>{@link #VideoLibraryScreen(UUID)}：屏幕控制页入口——只作用于该屏。</li>
+ * </ul>
  */
 public class VideoLibraryScreen extends Screen {
     @Override
@@ -32,13 +38,22 @@ public class VideoLibraryScreen extends Screen {
         ".flv", ".wmv", ".ts", ".m4v", ".mp3", ".m4a", ".wav", ".flac", ".ogg", ".aac"};
     private static final int ROWS_PER_PAGE = 5;
 
+    /** 目标屏幕；null = 总设置入口（播放到所有屏幕）。 */
     private final UUID screenId;
     private final List<File> files = new ArrayList<>();
     private int page = 0;
     private String query = "";
     private String pendingDelete = null;
+    /** 全局播放入口的二次确认：待确认播放的 URL（首次点击只提示，再点一次真正播放）。 */
+    private String pendingPlayUrl = null;
     private EditBox searchBox;
 
+    /** 总设置入口：播放/入队作用于所有屏幕。 */
+    public VideoLibraryScreen() {
+        this(null);
+    }
+
+    /** @param screenId 屏幕控制页入口（只作用于该屏）；null = 总设置入口（所有屏幕）。 */
     public VideoLibraryScreen(UUID screenId) {
         super(Component.literal("本地视频库"));
         this.screenId = screenId;
@@ -56,7 +71,9 @@ public class VideoLibraryScreen extends Screen {
         int cx = this.width / 2;
 
         addRenderableWidget(Button.builder(
-                Component.literal("§e📂 本地视频库 → 播放到屏幕"),
+                Component.literal(screenId == null
+                        ? "§e📂 本地视频库 → 向所有屏幕发送播放申请"
+                        : "§e📂 本地视频库 → 播放到屏幕"),
                 btn -> {}
         ).bounds(cx - 155, 20, 310, 16).build()).active = false;
 
@@ -102,28 +119,34 @@ public class VideoLibraryScreen extends Screen {
                 File f = shown.get(i);
                 String url = "file:" + f.getAbsolutePath().replace('\\', '/');
                 String fullName = f.getName();
-                String name = truncate(fullName, 24);
                 Button playBtn = Button.builder(Component.literal(""),
                         btn -> {
-                            ScreenSoundSettingsScreen.playOn(screenId, url);
-                            onClose();
+                            if (screenId == null) {
+                                // 总设置入口：向所有屏幕发播放申请（两次点击确认；被拒时留在本页）
+                                if (!url.equals(pendingPlayUrl)) {
+                                    pendingPlayUrl = url;
+                                    chat("§e[CinemaForYou] 将向所有屏幕发送播放申请，再点一次确认");
+                                    rebuildWidgets();
+                                    return;
+                                }
+                                if (ScreenSoundSettingsScreen.playOnAll(url)) {
+                                    pendingPlayUrl = null;
+                                    onClose();
+                                }
+                            } else if (ScreenSoundSettingsScreen.playOn(screenId, url)) {
+                                onClose();
+                            }
                         }
                 ).bounds(cx - 155, y, 196, 20).build();
                 addRenderableWidget(playBtn);
-                // 文件名超宽时悬停才滚动显示全部
+                // 文件名超宽时悬停才滚动显示全部；待确认时给出明确提示
                 addRenderableWidget(new MarqueeText(cx - 155, y, 196, 20, playBtn,
-                        "§a▶ " + fullName));
+                        url.equals(pendingPlayUrl)
+                                ? "§c⚠ 再点一次: 向所有屏幕发送播放申请 ▶ " + fullName
+                                : "§a▶ " + fullName));
                 addRenderableWidget(Button.builder(
                         Component.literal("＋队列"),
-                        btn -> {
-                            ClientConfig cfg = CinemaForYouClient.clientConfig;
-                            if (cfg != null) cfg.addToQueue(screenId.toString(), url);
-                            if (Minecraft.getInstance().player != null) {
-                                Minecraft.getInstance().player.sendSystemMessage(Component.literal(
-                                        "§a[CinemaForYou] 已加入队列: " + name
-                                                + " §7（播完模式选「自动播放下一个」生效）"));
-                            }
-                        }
+                        btn -> addToQueue(url)
                 ).bounds(cx + 45, y, 50, 20).build());
                 addRenderableWidget(Button.builder(
                         Component.literal(f.getName().equals(pendingDelete)
@@ -224,8 +247,20 @@ public class VideoLibraryScreen extends Screen {
         return false;
     }
 
-    private static String truncate(String s, int max) {
-        return s.length() <= max ? s : s.substring(0, max - 1) + "…";
+    /** 加入播放队列：总设置入口加入全局播放队列（不自动连播）；控制页入口只加入该屏（服务端记录玩家名/时间）。 */
+    private void addToQueue(String url) {
+        if (screenId == null) {
+            ClientNetworkHandlers.sendGlobalQueueAdd(url);
+        } else {
+            ClientNetworkHandlers.sendQueueAdd(screenId, url);
+        }
+    }
+
+    private static void chat(String msg) {
+        net.minecraft.client.player.LocalPlayer p = Minecraft.getInstance().player;
+        if (p != null) {
+            p.sendSystemMessage(Component.literal(msg));
+        }
     }
 
     @Override

@@ -55,6 +55,11 @@ public final class ClientNetworkHandlers {
         ClientPlayNetworking.registerGlobalReceiver(com.cinemaforyou.network.MediaMetaPayload.TYPE,
                 (payload, context) -> context.client().execute(() ->
                         com.cinemaforyou.client.network.MediaLibraryClient.acceptMeta(payload.entries())));
+
+        // 服务端播放队列全量同步（服务端唯一数据源 → 客户端只读镜像）
+        ClientPlayNetworking.registerGlobalReceiver(com.cinemaforyou.network.ScreenQueuePayload.TYPE,
+                (payload, context) -> context.client().execute(() ->
+                        QueueClient.accept(payload.entries())));
     }
 
     /** 向服务端请求"服务器媒体库"文件列表。 */
@@ -114,5 +119,72 @@ public final class ClientNetworkHandlers {
     /** 删除服务器媒体文件（管理员；删除的是服务器磁盘真实文件）。 */
     public static void sendMediaDelete(String name) {
         ClientPlayNetworking.send(new com.cinemaforyou.network.MediaDeletePayload(name));
+    }
+
+    // ───────────── 播放队列（服务端为唯一数据源） ─────────────
+
+    /** 入队到某屏（服务端记录加入者与时间；参与该屏"自动播放下一个"）。 */
+    public static void sendQueueAdd(java.util.UUID screenId, String url) {
+        ClientPlayNetworking.send(
+                com.cinemaforyou.network.ScreenQueueActionPayload.add(screenId, url));
+    }
+
+    /** 总设置入口：加入全局播放队列（不参与自动连播，手动点击才向所有屏幕发播放申请）。 */
+    public static void sendGlobalQueueAdd(String url) {
+        ClientPlayNetworking.send(
+                com.cinemaforyou.network.ScreenQueueActionPayload.addGlobal(url));
+    }
+
+    /** 删除某屏队列中的一项。 */
+    public static void sendQueueRemove(java.util.UUID screenId, int index) {
+        ClientPlayNetworking.send(
+                com.cinemaforyou.network.ScreenQueueActionPayload.remove(screenId, index));
+    }
+
+    /** 清空某屏队列。 */
+    public static void sendQueueClear(java.util.UUID screenId) {
+        ClientPlayNetworking.send(
+                com.cinemaforyou.network.ScreenQueueActionPayload.clear(screenId));
+    }
+
+    /** 上移/下移某屏队列中的一项。 */
+    public static void sendQueueMove(java.util.UUID screenId, int from, int to) {
+        ClientPlayNetworking.send(
+                com.cinemaforyou.network.ScreenQueueActionPayload.move(screenId, from, to));
+    }
+
+    /** 从队列立即播放某屏第 index 项。 */
+    public static void sendQueuePlay(java.util.UUID screenId, int index) {
+        ClientPlayNetworking.send(
+                com.cinemaforyou.network.ScreenQueueActionPayload.play(screenId, index));
+    }
+
+    /** 删除全局播放队列中的一项。 */
+    public static void sendGlobalQueueRemove(int index) {
+        ClientPlayNetworking.send(
+                com.cinemaforyou.network.ScreenQueueActionPayload.globalRemove(index));
+    }
+
+    /** 清空全局播放队列。 */
+    public static void sendGlobalQueueClear() {
+        ClientPlayNetworking.send(
+                com.cinemaforyou.network.ScreenQueueActionPayload.globalClear());
+    }
+
+    /** 全局播放队列上移/下移。 */
+    public static void sendGlobalQueueMove(int from, int to) {
+        ClientPlayNetworking.send(
+                com.cinemaforyou.network.ScreenQueueActionPayload.globalMove(from, to));
+    }
+
+    /** 手动点击全局播放队列第 index 项：向所有屏幕的 owner 发播放申请。 */
+    public static void sendGlobalQueuePlay(int index) {
+        ClientPlayNetworking.send(
+                com.cinemaforyou.network.ScreenQueueActionPayload.globalPlay(index));
+    }
+
+    /** 上传旧版本机队列（首次同步时一次性迁移）。 */
+    public static void sendQueueUpload(java.util.List<com.cinemaforyou.network.QueueEntry> entries) {
+        ClientPlayNetworking.send(new com.cinemaforyou.network.QueueUploadPayload(entries));
     }
 }

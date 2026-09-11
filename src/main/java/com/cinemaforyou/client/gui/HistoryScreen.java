@@ -23,6 +23,12 @@ import java.util.UUID;
 /**
  * 播放历史（服务器级）：显示谁在何时播放了什么；支持搜索、单条删除
  * （仅本人）、清空本人记录、立即播放/加入队列。
+ *
+ * <ul>
+ *   <li>无参构造：总设置入口——向所有屏幕的 owner 发送播放申请（首次点击提示确认，
+ *       再点一次才下发）；「＋队列」加入全局播放队列（不参与自动连播）；</li>
+ *   <li>{@link #HistoryScreen(UUID)}：屏幕控制页入口——只作用于该屏。</li>
+ * </ul>
  */
 public class HistoryScreen extends ScrollableSettingsScreen {
 
@@ -30,11 +36,23 @@ public class HistoryScreen extends ScrollableSettingsScreen {
     private static final DateTimeFormatter FMT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
+    /** 目标屏幕；null = 总设置入口（播放到所有屏幕）。 */
     private final UUID screenId;
     private String query = "";
     private int page = 0;
     private EditBox searchBox;
+    /** 二次确认状态（与本地视频库一致的机制）：null=无；CLEAR_KEY=清空我的历史；否则为待删除记录 id。 */
+    private static final String CLEAR_KEY = "__clear_mine__";
+    private String pendingDelete = null;
+    /** 全局播放入口的二次确认：待确认播放的 URL（首次点击只提示，再点一次真正播放）。 */
+    private String pendingPlayUrl = null;
 
+    /** 总设置入口：播放/入队作用于所有屏幕。 */
+    public HistoryScreen() {
+        this(null);
+    }
+
+    /** @param screenId 屏幕控制页入口（只作用于该屏）；null = 总设置入口（所有屏幕）。 */
     public HistoryScreen(UUID screenId) {
         super(Component.literal("播放历史"));
         this.screenId = screenId;
@@ -64,7 +82,10 @@ public class HistoryScreen extends ScrollableSettingsScreen {
         int y = 8;
 
         addRenderableWidget(new GuiTextLabel(cx, ry(y), w, 12,
-                "§e播放历史（服务器，显示谁在何时播放）", GuiTextLabel.Align.CENTER, GuiTextLabel.YELLOW));
+                screenId == null
+                        ? "§e播放历史（服务器）→ 向所有屏幕发送播放申请"
+                        : "§e播放历史（服务器，显示谁在何时播放）",
+                GuiTextLabel.Align.CENTER, GuiTextLabel.YELLOW));
         y += 15;
 
         searchBox = new EditBox(this.font, left, ry(y), w - 62, 20,
@@ -101,9 +122,22 @@ public class HistoryScreen extends ScrollableSettingsScreen {
 
         // ── 底部固定操作区（不随内容滚动，分页样式与本地视频库一致） ──
         int bottom = this.height - 32 + scrollY;      // 固定到屏幕底部上方
-        addRenderableWidget(Button.builder(Component.literal("🗑 清空我的历史"),
-                btn -> ClientNetworkHandlers.sendPlayLogAction(
-                        PlayLogActionPayload.ACTION_CLEAR_MINE, UUID.randomUUID())
+        addRenderableWidget(Button.builder(
+                Component.literal(CLEAR_KEY.equals(pendingDelete)
+                        ? "§c⚠确认清空我的历史?" : "🗑 清空我的历史"),
+                btn -> {
+                    // 清空记录：两次点击确认（与本地视频库删除同一套机制）
+                    if (!CLEAR_KEY.equals(pendingDelete)) {
+                        pendingDelete = CLEAR_KEY;
+                        Minecraft.getInstance().player.sendSystemMessage(Component.literal(
+                                "§c[CinemaForYou] 将清空我的全部播放历史（不可恢复），再点一次确认"));
+                        rebuildWidgets();
+                        return;
+                    }
+                    pendingDelete = null;
+                    ClientNetworkHandlers.sendPlayLogAction(
+                            PlayLogActionPayload.ACTION_CLEAR_MINE, UUID.randomUUID());
+                }
         ).bounds(left, ry(bottom - 26), w, 20).build());
 
         final int tPages = totalPages;
@@ -127,23 +161,18 @@ public class HistoryScreen extends ScrollableSettingsScreen {
         int qw = 40, nw = 36, dw = 44;
         int actionW = mine ? qw + nw + dw : qw + nw;
         int headW = w - actionW - 4;
-        String headText = "§a▶ " + name + "  §7" + e.playerName() + " " + time;
+        boolean pending = e.url().equals(pendingPlayUrl);
+        String headText = (pending ? "§c⚠ 再点一次: 向所有屏幕发送播放申请 ▶ " : "§a▶ ")
+                + name + "  §7" + e.playerName() + " " + time;
         // 主按钮（点击播放）+ 控制层：整行超宽时悬停才由按钮原生滚动显示全部
         Button headBtn = Button.builder(Component.literal(""),
-                btn -> ScreenSoundSettingsScreen.playOn(screenId, e.url()))
+                btn -> onPlay(e.url()))
                 .bounds(left, ry(y), headW, 20).build();
         addRenderableWidget(headBtn);
         addRenderableWidget(new MarqueeText(left, ry(y), headW, 20, headBtn, headText));
         int x = left + w - actionW;
         addRenderableWidget(Button.builder(Component.literal("＋队列"),
-                btn -> {
-                    ClientConfig cfg = CinemaForYouClient.clientConfig;
-                    if (cfg != null) {
-                        cfg.addToQueue(screenId.toString(), e.url());
-                        Minecraft.getInstance().player.sendSystemMessage(Component.literal(
-                                "§7[CinemaForYou] 已加入该屏播放队列"));
-                    }
-                }
+                btn -> addToQueue(e.url())
         ).bounds(x, ry(y), qw, 20).build());
         // 备注：给该视频链接起任意名字，显示时优先于标题/链接
         addRenderableWidget(Button.builder(Component.literal("✎备注"),
@@ -159,13 +188,54 @@ public class HistoryScreen extends ScrollableSettingsScreen {
                 }
         ).bounds(x + qw, ry(y), nw, 20).build());
         if (mine) {
-            addRenderableWidget(Button.builder(Component.literal("✕"),
-                    btn -> ClientNetworkHandlers.sendPlayLogAction(
-                            PlayLogActionPayload.ACTION_DELETE, e.id()))
+            String entryId = e.id().toString();
+            addRenderableWidget(Button.builder(
+                    Component.literal(entryId.equals(pendingDelete) ? "§c⚠确认?" : "✕删除"),
+                    btn -> {
+                        // 单条删除：两次点击确认（与本地视频库删除同一套机制）
+                        if (!entryId.equals(pendingDelete)) {
+                            pendingDelete = entryId;
+                            Minecraft.getInstance().player.sendSystemMessage(Component.literal(
+                                    "§c[CinemaForYou] 将删除这条播放历史（不可恢复），再点一次确认"));
+                            rebuildWidgets();
+                            return;
+                        }
+                        pendingDelete = null;
+                        ClientNetworkHandlers.sendPlayLogAction(
+                                PlayLogActionPayload.ACTION_DELETE, e.id());
+                        rebuildWidgets();
+                    })
                     .bounds(x + qw + nw, ry(y), dw, 20).build());
         }
         y += 22;
         return y;
+    }
+
+    /** 播放：总设置入口先二次确认再向所有屏幕发播放申请；控制页入口直接播到该屏。 */
+    private void onPlay(String url) {
+        if (screenId == null) {
+            if (!url.equals(pendingPlayUrl)) {
+                pendingPlayUrl = url;
+                Minecraft.getInstance().player.sendSystemMessage(Component.literal(
+                        "§e[CinemaForYou] 将向所有屏幕发送播放申请，再点一次确认"));
+                rebuildWidgets();
+                return;
+            }
+            if (ScreenSoundSettingsScreen.playOnAll(url)) {
+                pendingPlayUrl = null;
+            }
+        } else {
+            ScreenSoundSettingsScreen.playOn(screenId, url);
+        }
+    }
+
+    /** 加入播放队列（服务端记录玩家名/时间）：总设置入口加入全局播放队列（不自动连播）。 */
+    private void addToQueue(String url) {
+        if (screenId == null) {
+            ClientNetworkHandlers.sendGlobalQueueAdd(url);
+        } else {
+            ClientNetworkHandlers.sendQueueAdd(screenId, url);
+        }
     }
 
     private boolean isMine(PlayLogPayload.Entry e) {

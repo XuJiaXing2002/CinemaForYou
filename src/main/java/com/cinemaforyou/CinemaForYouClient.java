@@ -13,6 +13,7 @@ import com.mojang.blaze3d.platform.InputConstants;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.minecraft.client.KeyMapping;
@@ -59,6 +60,10 @@ public class CinemaForYouClient implements ClientModInitializer {
 
         // 0. 加载客户端配置
         clientConfig = ClientConfig.load();
+
+        // 0b. 用本地持久化副本预填队列内存镜像：重启后服务端队列同步到达前，
+        //     屏幕控制页 / 总设置全屏视图即可显示上次会话的队列；同步到达后覆盖。
+        com.cinemaforyou.client.network.QueueClient.initFromLocalMirror();
 
         // 1. 客户端屏幕状态管理器
         clientScreenManager = new ClientScreenManager();
@@ -121,11 +126,24 @@ public class CinemaForYouClient implements ClientModInitializer {
             }
         });
 
-        // 5. 断线时清理所有 VideoPlayer / 纹理 / 音频源
+        // 5. 断线时清理所有 VideoPlayer / 纹理 / 音频源（队列镜像一并清空）
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
             if (clientScreenManager != null) {
                 clientScreenManager.cleanup();
                 CLIENT_LOGGER.info("[CinemaForYou] 已清理所有客户端视频资源");
+            }
+            com.cinemaforyou.client.network.QueueClient.reset();
+            // 断开时把节流中的配置改动立即落盘（flush 内部只记日志，不抛异常）
+            if (clientConfig != null) {
+                clientConfig.flush();
+            }
+        });
+
+        // 5b. 客户端退出：兜底立即落盘，避免节流窗口内的改动随进程退出而丢失
+        ClientLifecycleEvents.CLIENT_STOPPING.register(client -> {
+            if (clientConfig != null) {
+                clientConfig.flush();
+                CLIENT_LOGGER.info("[CinemaForYou] 退出前已落盘客户端配置");
             }
         });
 

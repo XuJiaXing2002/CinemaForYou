@@ -18,7 +18,10 @@ import java.util.UUID;
  *
  * <p>支持的 action：
  * <ul>
- *   <li>{@link Action#PLAY} - 用 {@code param} 携带 sourceUrl 的额外参数（暂用 url 字段）</li>
+ *   <li>{@link Action#PLAY} - 用 {@code sourceUrl} 携带视频地址（作用于该屏）；</li>
+ *   <li>{@link Action#PLAY_ALL} - 广播播放（总设置入口）：不直接播放，而是由服务端向每个屏幕的
+ *       owner 发送"播放申请"（聊天栏可点击接受/拒绝，60 秒超时），接受后才在该屏播放
+ *       （id 不使用；任何屏幕忙碌都不影响下发）；</li>
  *   <li>{@link Action#PAUSE}</li>
  *   <li>{@link Action#RESUME}</li>
  *   <li>{@link Action#STOP}</li>
@@ -33,7 +36,7 @@ public record ScreenActionPayload(
 ) implements CustomPacketPayload {
 
     public enum Action {
-            PLAY, PAUSE, RESUME, STOP, SEEK, REPORT_ERROR
+            PLAY, PAUSE, RESUME, STOP, SEEK, REPORT_ERROR, PLAY_ALL
         }
 
     public static final Identifier ID =
@@ -63,8 +66,14 @@ public record ScreenActionPayload(
 
     // ── 工厂方法 ──
 
+    /** 播放到指定屏幕（屏幕控制页等"本屏自身"操作）。 */
     public static ScreenActionPayload play(UUID id, String url) {
         return new ScreenActionPayload(id, Action.PLAY, url, 0L);
+    }
+
+    /** 广播播放：向所有屏幕的 owner 发送播放申请（总设置入口，service 端逐屏派发申请）。 */
+    public static ScreenActionPayload playAll(String url) {
+        return new ScreenActionPayload(new UUID(0L, 0L), Action.PLAY_ALL, url, 0L);
     }
 
     public static ScreenActionPayload pause(UUID id) {

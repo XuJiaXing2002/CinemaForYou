@@ -1,5 +1,6 @@
 package com.cinemaforyou.client.gui;
 
+import com.cinemaforyou.client.network.ClientNetworkHandlers;
 import com.cinemaforyou.client.network.MediaLibraryClient;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
@@ -13,7 +14,13 @@ import java.util.UUID;
 
 /**
  * 服务器媒体库：列出 服务器目录/cinema/videos/ 下的媒体文件。
- * 点 ▶ 播放到目标屏幕；＋队列 加入该屏播放队列；支持刷新。
+ * 点 ▶ 播放；＋队列 加入播放队列；支持刷新。
+ *
+ * <ul>
+ *   <li>无参构造：总设置入口——向所有屏幕的 owner 发送播放申请（首次点击提示确认，
+ *       再点一次才下发）；「＋队列」加入全局播放队列（不参与自动连播）；</li>
+ *   <li>{@link #ServerMediaScreen(UUID)}：屏幕控制页入口——只作用于该屏。</li>
+ * </ul>
  */
 public class ServerMediaScreen extends Screen {
     @Override
@@ -26,11 +33,20 @@ public class ServerMediaScreen extends Screen {
 
     private static final int ROWS_PER_PAGE = 4;
 
+    /** 目标屏幕；null = 总设置入口（播放到所有屏幕）。 */
     private final UUID screenId;
     private int page = 0;
     private boolean loading = true;
     private String pendingDelete = null;
+    /** 全局播放入口的二次确认：待确认播放的 URL（首次点击只提示，再点一次真正播放）。 */
+    private String pendingPlayUrl = null;
 
+    /** 总设置入口：播放/入队作用于所有屏幕。 */
+    public ServerMediaScreen() {
+        this(null);
+    }
+
+    /** @param screenId 屏幕控制页入口（只作用于该屏）；null = 总设置入口（所有屏幕）。 */
     public ServerMediaScreen(UUID screenId) {
         super(Component.literal("服务器媒体库"));
         this.screenId = screenId;
@@ -70,7 +86,9 @@ public class ServerMediaScreen extends Screen {
         int left = cx - w / 2;
 
         Button title = Button.builder(
-                Component.literal("§e🖥 服务器媒体库（服务器 cinema/videos 目录）"), btn -> {}
+                Component.literal(screenId == null
+                        ? "§e🖥 服务器媒体库 → 向所有屏幕发送播放申请"
+                        : "§e🖥 服务器媒体库（服务器 cinema/videos 目录）"), btn -> {}
         ).bounds(left, 12, w, 16).build();
         title.active = false;
         addRenderableWidget(title);
@@ -101,22 +119,36 @@ public class ServerMediaScreen extends Screen {
                 String url = MediaLibraryClient.sourceFor(name);
                 Button playBtn = Button.builder(Component.literal(""),
                         btn -> {
-                            ScreenSoundSettingsScreen.playOn(screenId, url);
-                            onClose();
+                            if (screenId == null) {
+                                // 总设置入口：向所有屏幕发播放申请（两次点击确认；被拒时留在本页）
+                                if (!url.equals(pendingPlayUrl)) {
+                                    pendingPlayUrl = url;
+                                    chat("§e[CinemaForYou] 将向所有屏幕发送播放申请，再点一次确认");
+                                    rebuildWidgets();
+                                    return;
+                                }
+                                if (ScreenSoundSettingsScreen.playOnAll(url)) {
+                                    pendingPlayUrl = null;
+                                    onClose();
+                                }
+                            } else if (ScreenSoundSettingsScreen.playOn(screenId, url)) {
+                                onClose();
+                            }
                         }
                 ).bounds(left, y, 196, 20).build();
                 addRenderableWidget(playBtn);
-                // 文件名超宽时悬停才滚动显示全部
+                // 文件名超宽时悬停才滚动显示全部；待确认时给出明确提示
                 addRenderableWidget(new MarqueeText(left, y, 196, 20, playBtn,
-                        "§a▶ " + name));
+                        url.equals(pendingPlayUrl)
+                                ? "§c⚠ 再点一次: 向所有屏幕发送播放申请 ▶ " + name
+                                : "§a▶ " + name));
                 addRenderableWidget(Button.builder(Component.literal("＋队列"),
                         btn -> {
-                            com.cinemaforyou.CinemaForYouClient.clientConfig.addToQueue(
-                                    screenId.toString(), url);
-                            if (Minecraft.getInstance().player != null) {
-                                Minecraft.getInstance().player.sendSystemMessage(Component.literal(
-                                        "§a[CinemaForYou] 已加入队列: " + name
-                                                + " §7（播完模式选「自动播放下一个」生效）"));
+                            // 总设置入口加入全局播放队列（不自动连播）；控制页入口只加入该屏（服务端记录玩家名/时间）
+                            if (screenId == null) {
+                                ClientNetworkHandlers.sendGlobalQueueAdd(url);
+                            } else {
+                                ClientNetworkHandlers.sendQueueAdd(screenId, url);
                             }
                         }
                 ).bounds(left + 200, y, 58, 20).build());
@@ -184,6 +216,13 @@ public class ServerMediaScreen extends Screen {
                 Component.literal("← 返回上一级"),
                 btn -> onClose()
         ).bounds(left + 140, this.height - 30, Math.max(60, w - 140), 20).build());
+    }
+
+    private static void chat(String msg) {
+        net.minecraft.client.player.LocalPlayer p = Minecraft.getInstance().player;
+        if (p != null) {
+            p.sendSystemMessage(Component.literal(msg));
+        }
     }
 
     @Override

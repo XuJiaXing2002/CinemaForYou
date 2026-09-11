@@ -12,6 +12,8 @@ import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.network.chat.Component;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -183,13 +185,47 @@ public class ScreenSoundSettingsScreen extends ScrollableSettingsScreen {
                 updated.tiltDegV()));
     }
 
-    /** 播放指定源到目标屏幕（列表/历史屏共用入口）。 */
-    public static void playOn(UUID screenId, String url) {
-        if (screenId == null || url == null || url.isEmpty()) return;
+    /** 播放指定源到该屏幕（屏幕控制页等"本屏自身"入口，不做忙碌检查）。 */
+    public static boolean playOn(UUID screenId, String url) {
+        if (screenId == null || url == null || url.isEmpty()) return false;
         ClientNetworkHandlers.sendAction(ScreenActionPayload.play(screenId, url));
         ClientConfig cfg = CinemaForYouClient.clientConfig;
         if (cfg != null) {
             cfg.addHistory(url);
+        }
+        return true;
+    }
+
+    /**
+     * 总设置入口：向所有屏幕的 owner 发送"播放申请"（服务端逐屏派发；owner 在聊天栏
+     * 点「接受」后才会在该屏播放，点「拒绝」则不播；60 秒未响应自动过期）。
+     *
+     * <p>不做忙碌预检：任何屏幕忙碌都可以随时发送申请
+     * （旧版"任一屏忙/队列非空则整体拒绝下发"的客户端检查已取消）；
+     * 服务端仍是权威（无屏幕/权限/白名单校验都在服务端完成）。
+     *
+     * @return true = 申请已下发；false = 参数无效或没有屏幕
+     */
+    public static boolean playOnAll(String url) {
+        if (url == null || url.isEmpty()) return false;
+        List<CinemaScreen> all = new ArrayList<>(ClientScreenManager.get().allScreens().values());
+        if (all.isEmpty()) {
+            chat("§c[CinemaForYou] 还没有可播放的屏幕（先用选择器创建）");
+            return false;
+        }
+        ClientNetworkHandlers.sendAction(ScreenActionPayload.playAll(url));
+        ClientConfig cfg = CinemaForYouClient.clientConfig;
+        if (cfg != null) {
+            cfg.addHistory(url);
+        }
+        return true;
+    }
+
+    /** 聊天栏提示（全局播放入口共用）。 */
+    static void chat(String msg) {
+        net.minecraft.client.player.LocalPlayer p = Minecraft.getInstance().player;
+        if (p != null) {
+            p.sendSystemMessage(Component.literal(msg));
         }
     }
 

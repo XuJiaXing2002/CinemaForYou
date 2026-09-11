@@ -63,7 +63,8 @@ public final class MediaRemuxer {
     private static final Object FFMPEG_LOCK = new Object();
     private static volatile boolean localOnlyLogged = false;
 
-    private record Deferred(UUID screenId, UUID playerId) {}
+    /** 一次延后播放请求：发起玩家 + 需要在该文件转封装完成后开播的屏幕（广播播放可多屏）。 */
+    private record Deferred(UUID playerId, List<UUID> screenIds) {}
 
     private MediaRemuxer() {}
 
@@ -107,8 +108,17 @@ public final class MediaRemuxer {
      * 完成后自动播放）。返回 false 表示走正常播放流程。
      */
     public static boolean maybeDeferPlay(UUID screenId, ServerPlayer requester, String fileName) {
+        return maybeDeferPlay(List.of(screenId), requester, fileName);
+    }
+
+    /**
+     * 多屏版（总设置的广播播放）：一次为所有目标屏幕登记延后播放，只发一条提示；
+     * 转封装完成后逐屏自动开播。
+     */
+    public static boolean maybeDeferPlay(List<UUID> screenIds, ServerPlayer requester, String fileName) {
         try {
-            if (requester == null || fileName == null) return false;
+            if (requester == null || fileName == null
+                    || screenIds == null || screenIds.isEmpty()) return false;
             ServerConfig cfg = CinemaForYou.serverConfig;
             if (cfg != null && Boolean.FALSE.equals(cfg.autoRemux)) return false;
             if (!isRemuxCandidate(fileName)) return false;
@@ -135,7 +145,7 @@ public final class MediaRemuxer {
 
             List<Deferred> list = pending.computeIfAbsent(fileName, k -> new ArrayList<>());
             boolean newJob = list.isEmpty();
-            list.add(new Deferred(screenId, requester.getUUID()));
+            list.add(new Deferred(requester.getUUID(), List.copyOf(screenIds)));
             if (newJob) {
                 CinemaForYou.LOGGER.info("[CinemaForYou] 自动转封装任务入队: {} ({}MB)",
                         fileName, src.length() / 1024 / 1024);
@@ -269,7 +279,15 @@ public final class MediaRemuxer {
             for (Deferred d : defs) {
                 try {
                     ServerPlayer p = srv.getPlayerList().getPlayer(d.playerId());
-                    boolean wantPlay = mgr != null && mgr.isScreenActive(d.screenId());
+                    boolean wantPlay = mgr != null;
+                    if (wantPlay) {
+                        // 至少有一个目标屏幕仍在活动（未停止）才继续开播
+                        boolean anyActive = false;
+                        for (UUID sid : d.screenIds()) {
+                            if (mgr.isScreenActive(sid)) { anyActive = true; break; }
+                        }
+                        wantPlay = anyActive;
+                    }
                     if (p != null) {
                         if (ok) {
                             send(p, "§a✅ 已自动优化为 " + finalName
@@ -279,7 +297,11 @@ public final class MediaRemuxer {
                         }
                     }
                     if (wantPlay && mgr != null) {
-                        mgr.play(d.screenId(), "file:" + (ok ? finalName : fileName), p);
+                        for (UUID sid : d.screenIds()) {
+                            if (mgr.isScreenActive(sid)) {
+                                mgr.play(sid, "file:" + (ok ? finalName : fileName), p);
+                            }
+                        }
                     }
                 } catch (Throwable t) {
                     CinemaForYou.LOGGER.warn("[CinemaForYou] 转封装完成后自动播放失败: {}", t.toString());

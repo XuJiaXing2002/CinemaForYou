@@ -44,6 +44,7 @@ public final class NetworkHandlers {
         PayloadTypeRegistry.clientboundPlay().register(ScreenMetaPayload.TYPE, ScreenMetaPayload.STREAM_CODEC);
         PayloadTypeRegistry.clientboundPlay().register(PlayLogPayload.TYPE, PlayLogPayload.STREAM_CODEC);
         PayloadTypeRegistry.clientboundPlay().register(MediaMetaPayload.TYPE, MediaMetaPayload.STREAM_CODEC);
+        PayloadTypeRegistry.clientboundPlay().register(ScreenQueuePayload.TYPE, ScreenQueuePayload.STREAM_CODEC);
 
         // C2S（客户端发 → 服务端收）
         PayloadTypeRegistry.serverboundPlay().register(ScreenActionPayload.TYPE, ScreenActionPayload.STREAM_CODEC);
@@ -66,6 +67,10 @@ public final class NetworkHandlers {
                 PlayLogActionPayload.TYPE, PlayLogActionPayload.STREAM_CODEC);
         PayloadTypeRegistry.serverboundPlay().register(
                 MediaDeletePayload.TYPE, MediaDeletePayload.STREAM_CODEC);
+        PayloadTypeRegistry.serverboundPlay().register(
+                ScreenQueueActionPayload.TYPE, ScreenQueueActionPayload.STREAM_CODEC);
+        PayloadTypeRegistry.serverboundPlay().register(
+                QueueUploadPayload.TYPE, QueueUploadPayload.STREAM_CODEC);
 
         // 注册服务端 C2S 接收器
         registerServerReceivers();
@@ -331,6 +336,68 @@ public final class NetworkHandlers {
                         }
                     });
                 });
+
+        // ScreenQueueActionPayload：队列增/删/清空/上移下移/从队列播放（服务端校验权限）
+        ServerPlayNetworking.registerGlobalReceiver(ScreenQueueActionPayload.TYPE,
+                (payload, context) -> {
+                    ServerPlayer player = context.player();
+                    MinecraftServer server = context.server();
+                    server.execute(() -> handleQueueAction(payload, player));
+                });
+
+        // QueueUploadPayload：旧版本机队列一次性迁移上传
+        ServerPlayNetworking.registerGlobalReceiver(QueueUploadPayload.TYPE,
+                (payload, context) -> {
+                    ServerPlayer player = context.player();
+                    MinecraftServer server = context.server();
+                    server.execute(() -> {
+                        ScreenManager mgr = CinemaForYou.screenManager;
+                        if (mgr == null) return;
+                        mgr.queueUpload(player, payload.entries());
+                    });
+                });
+    }
+
+    /** 处理客户端发来的队列操作请求。 */
+    private static void handleQueueAction(ScreenQueueActionPayload payload, ServerPlayer player) {
+        ScreenManager mgr = CinemaForYou.screenManager;
+        if (mgr == null) {
+            player.sendSystemMessage(Component.literal("§c[CinemaForYou] 屏幕管理器未就绪"));
+            return;
+        }
+        switch (payload.action()) {
+            case ScreenQueueActionPayload.ACTION_ADD ->
+                    mgr.queueAdd(payload.id(), payload.url(), player);
+            case ScreenQueueActionPayload.ACTION_ADD_GLOBAL ->
+                    mgr.globalQueueAdd(payload.url(), player);
+            case ScreenQueueActionPayload.ACTION_REMOVE ->
+                    mgr.queueRemove(payload.id(), payload.index(), player);
+            case ScreenQueueActionPayload.ACTION_CLEAR ->
+                    mgr.queueClear(payload.id(), player);
+            case ScreenQueueActionPayload.ACTION_MOVE ->
+                    mgr.queueMove(payload.id(), payload.index(), payload.toIndex(), player);
+            case ScreenQueueActionPayload.ACTION_PLAY ->
+                    mgr.queuePlay(payload.id(), payload.index(), player);
+            case ScreenQueueActionPayload.ACTION_GLOBAL_REMOVE ->
+                    mgr.globalQueueRemove(payload.index(), player);
+            case ScreenQueueActionPayload.ACTION_GLOBAL_CLEAR ->
+                    mgr.globalQueueClear(player);
+            case ScreenQueueActionPayload.ACTION_GLOBAL_MOVE ->
+                    mgr.globalQueueMove(payload.index(), payload.toIndex(), player);
+            case ScreenQueueActionPayload.ACTION_GLOBAL_PLAY ->
+                    mgr.globalQueuePlay(payload.index(), player);
+            default -> { }
+        }
+    }
+
+    /** 构造并广播全部屏幕队列（队列变更后由 ScreenManager 调用）。 */
+    public static void broadcastQueues(List<com.cinemaforyou.network.QueueEntry> entries) {
+        ScreenQueuePayload payload = new ScreenQueuePayload(entries);
+        for (ServerPlayer player : getServer().getPlayerList().getPlayers()) {
+            if (ServerPlayNetworking.canSend(player, ScreenQueuePayload.TYPE)) {
+                ServerPlayNetworking.send(player, payload);
+            }
+        }
     }
 
     /** 处理客户端发来的动作请求。 */
@@ -342,6 +409,11 @@ public final class NetworkHandlers {
         }
 
         UUID id = payload.id();
+        // 广播播放（总设置入口）不针对单个屏幕：服务端向各屏 owner 发播放申请（ScreenManager.playAll）
+        if (payload.action() == ScreenActionPayload.Action.PLAY_ALL) {
+            mgr.playAll(payload.sourceUrl(), player);
+            return;
+        }
         // 权限校验：屏幕 owner 或 op2(GAMEMASTERS) 可控制
         CinemaScreen screen = mgr.get(id);
         if (screen != null && !canControl(screen, player)) {
@@ -353,9 +425,7 @@ public final class NetworkHandlers {
         }
 
         switch (payload.action()) {
-            case PLAY -> {
-                mgr.play(id, payload.sourceUrl(), player);
-            }
+            case PLAY -> mgr.play(id, payload.sourceUrl(), player);
             case PAUSE -> mgr.pause(id, player);
             case RESUME -> mgr.resume(id, player);
             case STOP -> mgr.stop(id, player);
@@ -367,6 +437,7 @@ public final class NetworkHandlers {
                         "§e⏹ 已因播放失败停止该屏幕"));
                 mgr.stop(id, player);
             }
+            default -> { }
         }
     }
 
@@ -413,12 +484,9 @@ public final class NetworkHandlers {
         return new PlayLogPayload(out);
     }
 
-    /** 判断玩家是否有权控制某屏幕：owner 或 op 等级 ≥ 2（配合 LuckPerms 等分配）。 */
-    private static boolean canControl(CinemaScreen screen, ServerPlayer player) {        if (screen.ownerId().equals(player.getUUID().toString())) {
-            return true;
-        }
-        return player.createCommandSourceStack().permissions().hasPermission(
-                new Permission.HasCommandLevel(PermissionLevel.GAMEMASTERS));
+    /** 判断玩家是否有权控制某屏幕：owner 或 op 等级 ≥ 2（实现见 ScreenManager，与队列操作同一套校验）。 */
+    private static boolean canControl(CinemaScreen screen, ServerPlayer player) {
+        return ScreenManager.canControl(screen, player);
     }
 
     /** 注册玩家加入事件：发送全量屏幕列表。在 SERVER_STARTED 时调用。 */
@@ -433,6 +501,11 @@ public final class NetworkHandlers {
                     sender.sendPacket(new ScreenSyncPayload(all));
                     // 同时发送每个屏幕的当前状态
                     mgr.sendAllStates(handler.getPlayer(), sender);
+                }
+                // 队列全量同步（即使没有屏幕也发空列表：客户端据此确认服务端支持队列，
+                // 并触发旧版本机队列的一次性迁移上传）
+                if (ServerPlayNetworking.canSend(handler.getPlayer(), ScreenQueuePayload.TYPE)) {
+                    sender.sendPacket(new ScreenQueuePayload(mgr.allQueueEntries()));
                 }
             });
         });

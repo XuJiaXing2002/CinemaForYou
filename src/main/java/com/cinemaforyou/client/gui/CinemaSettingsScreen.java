@@ -1,27 +1,28 @@
 package com.cinemaforyou.client.gui;
 
 import com.cinemaforyou.CinemaForYouClient;
-import com.cinemaforyou.client.ClientScreenManager;
 import com.cinemaforyou.client.config.ClientConfig;
-import com.cinemaforyou.data.CinemaScreen;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.permissions.Permission;
+import net.minecraft.server.permissions.PermissionLevel;
 
 import javax.swing.JFileChooser;
 import javax.swing.SwingUtilities;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.UUID;
 
 /**
  * 影院设置界面（V 键主设置，可滚动）。
  *
  * <p>内容：渲染/音量/声音默认值、cookies（浏览器下拉选择 + cookies.txt 文件浏览）、
- * 本地视频目录，以及"目标屏幕"的播完行为、本地视频列表与播放历史入口。
+ * 本地视频目录，以及播完行为与本地视频/播放历史/服务器媒体库/播放队列入口。
+ *
+ * <p>本页所有播放入口不再针对单个目标屏幕：播放会对所有已存在的屏幕一起下发
+ * （首次点击提示确认，再点一次才真正播放；任一屏幕忙碌则整体不下发）。
  * 超出屏幕高度时可用滚轮 + 右侧滚动条滚动。
  */
 public class CinemaSettingsScreen extends ScrollableSettingsScreen {
@@ -84,7 +85,8 @@ public class CinemaSettingsScreen extends ScrollableSettingsScreen {
 
     @Override
     protected void buildContent() {
-        refreshHook = this::rebuildWidgets; // 目标选择页返回时刷新本页
+        // OP 权限（等级 ≥2）：以下涉及"屏幕/播放"的入口仅 OP 可操作（保存/取消不受限）
+        boolean isOp = hasOpPermission();
         int cx = this.width / 2;
         int left = cx - 155;   // 标签列
         int right = cx + 5;    // 控件列
@@ -159,9 +161,14 @@ public class CinemaSettingsScreen extends ScrollableSettingsScreen {
         ).bounds(right, ry(y), ctrlW, 18).build());
         y += rowH;
 
-        // ── yt-dlp 自动下载 ──
+        // ── yt-dlp 自动下载（需要 OP） ──
         addLabel("yt-dlp 自动下载", left, ry(y), labelW);
-        addRenderableWidget(toggleButton(right, ry(y), ctrlW, autoDownloadYtDlp, v -> autoDownloadYtDlp = v));
+        Button ytDlpBtn = toggleButton(right, ry(y), ctrlW, autoDownloadYtDlp, v -> autoDownloadYtDlp = v);
+        if (!isOp) {
+            ytDlpBtn.active = false;
+            ytDlpBtn.setMessage(Component.literal("§7需要OP权限"));
+        }
+        addRenderableWidget(ytDlpBtn);
         y += rowH;
 
         // ── 选择预览框 / 调试信息 ──
@@ -173,15 +180,56 @@ public class CinemaSettingsScreen extends ScrollableSettingsScreen {
         addRenderableWidget(toggleButton(right, ry(y), ctrlW, showDebugInfo, v -> showDebugInfo = v));
         y += rowH + 2;
 
-        // ── cookies 浏览器（下拉选择） ──
-        addLabel("cookies 来源浏览器", left, ry(y), labelW);
+        // ── cookies / 本地视频目录（整行宽度的长条按钮 + 等宽输入框），整体排在下组长条按钮上方 ──
+        // 与下方"目标屏幕/服务器媒体库"等长条按钮同 x、同宽（= 整行宽度）、同高，无黄色标题文字
+        int blockW = Math.min(300, this.width - 30);
+        int blockX = cx - blockW / 2;
+
+        // ① 长条按钮「选择cookies文件」：点击直接弹出系统"选择文件"对话框
         addRenderableWidget(Button.builder(
-                Component.literal(browserLabel(cookiesBrowser) + (browserOpen ? " ▴" : " ▾")),
+                Component.literal("选择cookies文件"),
+                btn -> chooseCookiesFile()
+        ).bounds(blockX, ry(y), blockW, 20).build());
+        y += 22;
+
+        // ② cookies 文件路径输入框：与上方按钮同 x、同宽，紧贴其下
+        cookiesFileField = new EditBox(this.font, blockW, 18,
+                Component.translatable("gui.cinemaforyou.settings.cookies_file"));
+        cookiesFileField.setX(blockX);
+        cookiesFileField.setY(ry(y));
+        cookiesFileField.setMaxLength(256);
+        cookiesFileField.setValue(cookiesFile);
+        cookiesFileField.setHint(Component.literal("如 cookies.txt（优先于浏览器）"));
+        addRenderableWidget(cookiesFileField);
+        y += 20;
+
+        // ③ 长条按钮「浏览本地文件夹」：点击直接弹出系统"选择文件夹"对话框
+        addRenderableWidget(Button.builder(
+                Component.literal("浏览本地文件夹"),
+                btn -> chooseVideosDir()
+        ).bounds(blockX, ry(y), blockW, 20).build());
+        y += 22;
+
+        // ④ 本地视频目录输入框：与上方按钮同 x、同宽，紧贴其下
+        videosDirField = new EditBox(this.font, blockW, 18,
+                Component.translatable("gui.cinemaforyou.settings.videos_dir"));
+        videosDirField.setX(blockX);
+        videosDirField.setY(ry(y));
+        videosDirField.setMaxLength(256);
+        videosDirField.setValue(videosDir.isEmpty() ? "cinema/videos" : videosDir);
+        videosDirField.setHint(Component.literal("cinema/videos 或 D:\\Videos"));
+        addRenderableWidget(videosDirField);
+        y += 20;
+
+        // ⑤ cookies来源浏览器：仍是下拉选项（点击弹出浏览器列表），长条按钮样式，无输入框
+        addRenderableWidget(Button.builder(
+                Component.literal("cookies来源浏览器: " + browserLabel(cookiesBrowser)
+                        + (browserOpen ? " ▴" : " ▾")),
                 btn -> {
                     browserOpen = !browserOpen;
                     rebuildWidgets();
                 }
-        ).bounds(right, ry(y), ctrlW, 18).build());
+        ).bounds(blockX, ry(y), blockW, 20).build());
         cookiesBrowserRowY = y;
         y += rowH;
         if (browserOpen) {
@@ -197,29 +245,37 @@ public class CinemaSettingsScreen extends ScrollableSettingsScreen {
                             browserOpen = false;
                             rebuildWidgets();
                         }
-                ).bounds(right, py, ctrlW, 13).build());
+                ).bounds(blockX, py, blockW, 13).build());
                 py += itemH;
             }
             y += BROWSERS.size() * itemH; // 为展开的选项预留纵向空间
         }
 
-        // ── cookies.txt 文件（可浏览选择） ──
-        cookiesFileField = new EditBox(this.font, 200, 16,
-                Component.translatable("gui.cinemaforyou.settings.cookies_file"));
-        cookiesFileField.setX(right);
-        cookiesFileField.setY(ry(y));
-        cookiesFileField.setMaxLength(256);
-        cookiesFileField.setValue(cookiesFile);
-        cookiesFileField.setHint(Component.literal("如 cookies.txt（优先于浏览器）"));
-        addRenderableWidget(cookiesFileField);
-        addLabel("cookies.txt 文件", left, ry(y) + 1, labelW);
-        addRenderableWidget(Button.builder(
-                Component.literal("选择文件…"),
-                btn -> chooseCookiesFile()
-        ).bounds(cx - 155, ry(y) + 18, 150, 15).build());
-        y += rowH + 18;
+        // ── 播完行为（全局默认，对所有屏幕生效；每屏可在声音与播放设置里单独覆盖/跟随） ──
+        final int[] gMode = {0};
+        if (CinemaForYouClient.clientConfig != null) {
+            gMode[0] = CinemaForYouClient.clientConfig.defaultPlayMode;
+        }
+        Button modeBtn = Button.builder(
+                Component.literal("播完行为(全局默认): " + modeLabel(gMode[0]) + "（点击切换）"),
+                btn -> {
+                    if (CinemaForYouClient.clientConfig == null) return;
+                    int next = (CinemaForYouClient.clientConfig.defaultPlayMode + 1) % 4;
+                    CinemaForYouClient.clientConfig.defaultPlayMode = next;
+                    CinemaForYouClient.clientConfig.save();
+                    Minecraft.getInstance().player.sendSystemMessage(Component.literal(
+                            "§7[CinemaForYou] 播完行为全局默认: §a" + modeLabel(next)
+                                    + " §7（对所有屏幕生效；某屏选「跟随全局」的屏幕按此执行）"));
+                    rebuildWidgets();
+                }
+        ).bounds(cx - Math.min(300, this.width - 30) / 2, ry(y),
+                Math.min(300, this.width - 30), 20).build();
+        modeBtn.active = isOp;
+        addRenderableWidget(modeBtn);
+        y += rowH;
 
-        // ── yt-dlp 网络代理（TikTok 等直连不通的站点用） ──
+        // ── yt-dlp 网络代理（TikTok 等直连不通的站点用）：播放行为区块内、排在已有控件下方 ──
+        int behaviorW = Math.min(300, this.width - 30);
         String proxyVal = CinemaForYouClient.clientConfig != null
                 ? CinemaForYouClient.clientConfig.ytDlpProxy : "";
         final String[] proxyRef = {proxyVal};
@@ -240,126 +296,43 @@ public class CinemaSettingsScreen extends ScrollableSettingsScreen {
                                 proxyRef[0] = CinemaForYouClient.clientConfig.ytDlpProxy;
                             }));
                 }
-        ).bounds(cx - 155, ry(y), 310, 20).build();
+        ).bounds(cx - behaviorW / 2, ry(y), behaviorW, 20).build();
         addRenderableWidget(proxyBtn);
-        addRenderableWidget(new GuiTextLabel(cx - 155, ry(y) + 21, 310, 10,
-                "§7例: http://127.0.0.1:7890（Clash）或 socks5://127.0.0.1:1080",
-                GuiTextLabel.Align.LEFT, GuiTextLabel.GRAY_LIGHT));
-        y += rowH + 22;
+        y += rowH;   // 原下方"例: http://127.0.0.1:7890…"提示行已删除，后续控件相应上移
 
-        // ── 本地视频目录（文件夹浏览） ──
-        videosDirField = new EditBox(this.font, 200, 16,
-                Component.translatable("gui.cinemaforyou.settings.videos_dir"));
-        videosDirField.setX(right);
-        videosDirField.setY(ry(y));
-        videosDirField.setMaxLength(256);
-        videosDirField.setValue(videosDir.isEmpty() ? "cinema/videos" : videosDir);
-        videosDirField.setHint(Component.literal("cinema/videos 或 D:\\Videos"));
-        addRenderableWidget(videosDirField);
-        addLabel("本地视频目录(文件夹)", left, ry(y) + 1, labelW);
-        addRenderableWidget(Button.builder(
-                Component.literal("浏览文件夹…"),
-                btn -> chooseVideosDir()
-        ).bounds(cx - 155, ry(y) + 18, 150, 15).build());
-        y += rowH + 20;
-
-        // ── 屏幕播放管理（目标屏幕） ──
-        addCenteredLabel("——— 屏幕播放管理（选目标屏幕） ———", cx, ry(y), Math.min(300, this.width - 30));
-        y += rowH;
-        List<CinemaScreen> screens = new ArrayList<>(ClientScreenManager.get().allScreens().values());
-        screens.sort((a, b) -> a.displayName().compareToIgnoreCase(b.displayName()));
-        CinemaScreen target = resolveTarget(screens);
-        String targetLabel = target == null
-                ? "§7（尚无屏幕：先用选择器选两个角点创建）"
-                : target.displayName() + " @ " + target.center().toShortString();
-        Button targetBtn = Button.builder(
-                Component.literal("🎯 目标屏幕: " + targetLabel + "（点击选择）"),
-                btn -> openChild(new TargetSearchScreen())
-        ).bounds(cx - Math.min(300, this.width - 30) / 2, ry(y),
-                Math.min(300, this.width - 30), 20).build();
-        if (target == null) targetBtn.active = false;
-        addRenderableWidget(targetBtn);
-        y += rowH;
-
-        // ── 播完行为（全局默认；每屏可在声音与播放设置里单独覆盖/跟随） ──
-        final int[] gMode = {0};
-        if (CinemaForYouClient.clientConfig != null) {
-            gMode[0] = CinemaForYouClient.clientConfig.defaultPlayMode;
-        }
-        Button modeBtn = Button.builder(
-                Component.literal("播完行为(全局默认): " + modeLabel(gMode[0]) + "（点击切换）"),
-                btn -> {
-                    if (CinemaForYouClient.clientConfig == null) return;
-                    int next = (CinemaForYouClient.clientConfig.defaultPlayMode + 1) % 4;
-                    CinemaForYouClient.clientConfig.defaultPlayMode = next;
-                    CinemaForYouClient.clientConfig.save();
-                    Minecraft.getInstance().player.sendSystemMessage(Component.literal(
-                            "§7[CinemaForYou] 播完行为全局默认: §a" + modeLabel(next)
-                                    + " §7（某屏选「跟随全局」的屏幕按此执行）"));
-                    rebuildWidgets();
-                }
-        ).bounds(cx - Math.min(300, this.width - 30) / 2, ry(y),
-                Math.min(300, this.width - 30), 20).build();
-        addRenderableWidget(modeBtn);
-        y += rowH;
-
-        // ── 本地视频列表 / 播放历史 ──
-        UUID targetId = target != null ? target.id() : null;
-        int btnW = Math.min(300, this.width - 30) / 2 - 3;
+        // ── 本地视频列表 / 播放历史 / 服务器媒体库（总设置入口：播放到所有屏幕） ──
+        int blockW2 = Math.min(300, this.width - 30);
+        int blockX2 = cx - blockW2 / 2;
+        int btnW = blockW2 / 2 - 3;
         Button libBtn = Button.builder(
                 Component.literal("📂 本地视频…"),
-                btn -> {
-                    if (targetId != null) {
-                        rememberTarget(targetId);
-                        openChild(new VideoLibraryScreen(targetId));
-                    }
-                }
-        ).bounds(cx - Math.min(300, this.width - 30) / 2, ry(y), btnW, 20).build();
-        libBtn.active = target != null;
+                btn -> openChild(new VideoLibraryScreen())
+        ).bounds(blockX2, ry(y), btnW, 20).build();
+        libBtn.active = isOp;
         addRenderableWidget(libBtn);
 
         Button histBtn = Button.builder(
                 Component.literal("🕘 播放历史…"),
-                btn -> {
-                    if (targetId != null) {
-                        rememberTarget(targetId);
-                        openChild(new HistoryScreen(targetId));
-                    }
-                }
+                btn -> openChild(new HistoryScreen())
         ).bounds(cx + 3, ry(y), btnW, 20).build();
-        histBtn.active = target != null;
+        histBtn.active = isOp;
         addRenderableWidget(histBtn);
         y += rowH;
 
         Button serverLibBtn = Button.builder(
                 Component.literal("🖥 服务器媒体库…（服务器 cinema/videos）"),
-                btn -> {
-                    if (targetId != null) {
-                        rememberTarget(targetId);
-                        openChild(new ServerMediaScreen(targetId));
-                    }
-                }
-        ).bounds(cx - Math.min(300, this.width - 30) / 2, ry(y),
-                Math.min(300, this.width - 30), 20).build();
-        serverLibBtn.active = target != null;
+                btn -> openChild(new ServerMediaScreen())
+        ).bounds(blockX2, ry(y), blockW2, 20).build();
+        serverLibBtn.active = isOp;
         addRenderableWidget(serverLibBtn);
         y += rowH;
 
-        // ── 播放队列管理（目标屏幕） ──
+        // ── 全局播放队列（不参与自动连播；手动点击条目才向所有屏幕发播放申请） ──
         Button queueBtn = Button.builder(
-                Component.literal("📋 播放队列管理…（目标屏幕）"),
-                btn -> {
-                    if (target != null) {
-                        rememberTarget(target.id());
-                        openChild(new ScreenQueueManagerScreen(target.id()));
-                    } else {
-                        Minecraft.getInstance().player.sendSystemMessage(Component.literal(
-                                "§c[CinemaForYou] 还没有可管理的屏幕（先创建屏幕）"));
-                    }
-                }
-        ).bounds(cx - Math.min(300, this.width - 30) / 2, ry(y),
-                Math.min(300, this.width - 30), 20).build();
-        queueBtn.active = target != null;
+                Component.literal("全局播放队列管理"),
+                btn -> openChild(new ScreenQueueManagerScreen())
+        ).bounds(blockX2, ry(y), blockW2, 20).build();
+        queueBtn.active = isOp;
         addRenderableWidget(queueBtn);
         y += rowH;
 
@@ -370,18 +343,7 @@ public class CinemaSettingsScreen extends ScrollableSettingsScreen {
         ).bounds(cx - Math.min(300, this.width - 30) / 2, ry(y),
                 Math.min(300, this.width - 30), 20).build();
         addRenderableWidget(adminBtn);
-        y += rowH;
-
-        // 长提示自动换行完整显示
-        int hintW = Math.min(320, this.width - 30);
-        for (String line : UiText.wrap(
-                "§7提示：播完行为选「自动播放下一个」时按该屏队列顺序循环；"
-                        + "「循环本片」重复当前视频；历史会自动记录播放过的视频与链接。",
-                hintW)) {
-            addCenteredLabel(line, cx, ry(y), hintW);
-            y += 11;
-        }
-        y += 2;
+        y += rowH + 6;   // 原底部播放行为提示已删除，保存/取消相应上移
 
         // ── 保存 / 取消 ──
         addRenderableWidget(Button.builder(
@@ -408,54 +370,19 @@ public class CinemaSettingsScreen extends ScrollableSettingsScreen {
         finishContent(y);
     }
 
-    // ───────────── 目标屏幕 ─────────────
+    // ───────────── 权限 ─────────────
 
-    /** 目标选择页点选后先刷新本设置页（静态钩子，单实例使用安全）。 */
-    private static Runnable refreshHook = null;
-
-    public static void refreshOnReturn() {
-        Runnable r = refreshHook;
-        if (r != null) {
-            Minecraft.getInstance().execute(r);
-        }
-    }
-
-    private void rememberTarget(UUID id) {
-        ClientConfig cfg = CinemaForYouClient.clientConfig;
-        if (cfg != null && !id.toString().equals(cfg.lastTargetScreenId)) {
-            cfg.lastTargetScreenId = id.toString();
-            cfg.save();
-        }
-    }
-
-    private CinemaScreen resolveTarget(List<CinemaScreen> screens) {
-        if (screens.isEmpty()) return null;
-        ClientConfig cfg = CinemaForYouClient.clientConfig;
-        if (cfg != null && !cfg.lastTargetScreenId.isEmpty()) {
-            for (CinemaScreen s : screens) {
-                if (s.id().toString().equals(cfg.lastTargetScreenId)) {
-                    return s;
-                }
-            }
-        }
-        return screens.get(0);
-    }
-
-    private void cycleTarget(List<CinemaScreen> screens) {
-        if (screens.isEmpty()) return;
-        CinemaScreen cur = resolveTarget(screens);
-        int idx = 0;
-        if (cur != null) {
-            for (int i = 0; i < screens.size(); i++) {
-                if (screens.get(i).id().equals(cur.id())) {
-                    idx = i;
-                    break;
-                }
-            }
-        }
-        CinemaScreen next = screens.get((idx + 1) % screens.size());
-        rememberTarget(next.id());
-        rebuildWidgets();
+    /**
+     * 当前玩家是否 OP（权限等级 ≥2）。
+     *
+     * <p>26.2 权限 API 已重构：客户端等价于旧版 {@code player.hasPermissions(2)} 的写法是
+     * {@code player.permissions().hasPermission(new Permission.HasCommandLevel(GAMEMASTERS))}
+     * （客户端权限集由服务端同步，与服务端 {@code canControl} 判定一致）。
+     */
+    private static boolean hasOpPermission() {
+        net.minecraft.client.player.LocalPlayer p = Minecraft.getInstance().player;
+        return p != null && p.permissions().hasPermission(
+                new Permission.HasCommandLevel(PermissionLevel.GAMEMASTERS));
     }
 
     // ───────────── 辅助 ─────────────
