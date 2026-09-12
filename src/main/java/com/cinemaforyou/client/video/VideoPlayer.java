@@ -193,6 +193,8 @@ public class VideoPlayer {
     private volatile long lastSeekHandledAtMs = 0L;
     /** 连续空帧计数（seek 后与正常播放共用，见 decodeLoop）。 */
     private int consecutiveNulls = 0;
+    /** 上次 seek 目标超出片尾：按"正常播完"处理，由解码循环走既有 EOF 链路。 */
+    private boolean seekPastEnd = false;
     /** seek 落点超前时的后退重试次数。 */
     private int seekFixTries = 0;
     /** 最近一次成功上传显示帧的时刻（渲染线程写，冻结看门狗用）。 */
@@ -547,6 +549,7 @@ public class VideoPlayer {
                     // 暂停时也处理挂起的 seek（控制界面"暂停中跳转"的场景）
                     if (pendingSeekMs >= 0) {
                         applySeek(pendingSeekMs);
+                        if (seekPastEndReached(resolved)) return;
                     }
                     updateMasterClock(true);
                     Thread.sleep(25);
@@ -557,6 +560,7 @@ public class VideoPlayer {
                     Thread.sleep(25);
                     if (pendingSeekMs >= 0) {
                         applySeek(pendingSeekMs);
+                        if (seekPastEndReached(resolved)) return;
                     }
                     continue;
                 }
@@ -788,15 +792,45 @@ public class VideoPlayer {
         }
     }
 
+    /**
+     * seek 目标超出片尾时的收尾：走既有 EOF 链路（启动音频收尾 → 标记 EOF →
+     * 等音频排空），随后由渲染线程按当前屏幕播完行为执行动作（循环/下一项/
+     * 播完暂停/停止；申请授权内容则按既有规则播完即停）。
+     *
+     * @return true = 已按播完处理，解码循环应结束本次播放
+     */
+    private boolean seekPastEndReached(UrlResolver.ResolvedSource resolved)
+            throws InterruptedException {
+        if (!seekPastEnd) return false;
+        seekPastEnd = false;
+        startAudioIfNeeded(resolved);
+        markVideoEof();
+        waitAudioFinished();
+        return true;
+    }
+
     /** 处理一次 seek：重置 PTS 映射、清空排队帧、重锚时钟基准。 */
-    private void applySeek(long targetMs) {
-        pendingSeekMs = -1L;
+    private void applySeek(long targetMs) {        pendingSeekMs = -1L;
         if (durationMs > 0 && targetMs >= durationMs) {
-            // 目标超出片尾（服务端位置残留/进度越界）：按从头播放处理，
-            // 否则 seek 到片尾之后会一直抓不到帧（日志里"seek 后连续空帧"死循环）
-            LOGGER.warn("[CinemaForYou] seek 目标 {}ms 已超过时长 {}ms，按从头播放处理",
+            // 跳转目标超出片尾：按"正常播完"处理——交给既有 EOF 链路决定后续
+            // （循环/自动下一项/播完暂停/停止；申请授权的内容则按既有规则"播完即停"）。
+            // 注意：绝不能回退成"从头播放"，那会导致跳转越界后从头加速追画面。
+            LOGGER.warn("[CinemaForYou] seek 目标 {}ms 已超过时长 {}ms，按正常播完处理",
                     targetMs, durationMs);
-            targetMs = 0L;
+            resetSlots();
+            firstPtsUs = -1L;
+            lastPtsUs = -1L;
+            consecutiveNulls = 0;
+            seekFixTries = 0;
+            lastSeekHandledAtMs = System.currentTimeMillis();
+            segmentStartMs = durationMs;
+            masterPosMs = durationMs;
+            wallFallback = true;
+            wallBasePosMs = durationMs;
+            wallBaseWallMs = System.currentTimeMillis();
+            resyncArmed = false;
+            seekPastEnd = true;
+            return;
         }
         if (targetMs < DIRECT_SEEK_MIN_MS) {
             // 回开头/小目标：setTimestamp 在部分 WebM 上会错误落到末尾关键帧（实测），
