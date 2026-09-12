@@ -30,8 +30,6 @@ import java.util.Map;
  * 不按 owner 过滤、也不过滤自己的屏幕）：主页玩家行显示「玩家名 + 屏幕 N 个」，
  * 明细页每行显示 屏幕名 + 归属玩家名 + 坐标 + 创建时间；
  * 两层各有一个搜索框（名称/自定义名/创建者），分页与返回机制同其它列表页。
- *
- * <p>选择逻辑、搜索过滤（名称/自定义名/创建者）与返回刷新机制全部保持现状，仅改层级与展示。
  */
 public class TargetSearchScreen extends ScrollableSettingsScreen {
 
@@ -90,7 +88,6 @@ public class TargetSearchScreen extends ScrollableSettingsScreen {
         int cx = this.width / 2;
         int w = Math.min(320, this.width - 30);
         int left = cx - w / 2;
-        // 内容起始 y=2：标题贴屏幕顶部，去掉原来的顶部留白（行距保持不变）
         int y = 2;
 
         addRenderableWidget(new GuiTextLabel(cx, ry(y), w, 12,
@@ -118,7 +115,7 @@ public class TargetSearchScreen extends ScrollableSettingsScreen {
         List<CinemaScreen> filtered = filter(all);
 
         // 主页：按 owner 分组，一行一个玩家（玩家名 + 屏幕 N 个）；点玩家行 → 该玩家的屏幕列表
-        // 明细页：该玩家的屏幕列表，点某屏完成选择（选择逻辑与原来完全一致）
+        // 明细页：该玩家的屏幕列表，点某屏完成选择
         List<PlayerGroup> groups = isHome() ? groupByOwner(filtered) : null;
         List<CinemaScreen> shown = isHome() ? null : screensOfOwner(filtered);
         int total = isHome() ? groups.size() : shown.size();

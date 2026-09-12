@@ -1,6 +1,5 @@
 package com.cinemaforyou.client.gui;
 
-import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
@@ -21,7 +20,6 @@ public class ScreenLinkInputScreen extends Screen {
         }
     }
 
-
     private final UUID screenId;
     private EditBox urlField;
 
@@ -32,11 +30,10 @@ public class ScreenLinkInputScreen extends Screen {
 
     @Override
     protected void init() {
-        // 整体上移贴屏幕顶部（原以屏幕中心为基准 cy-56 起，现改为从 y=2 起），行距不变
         int cx = this.width / 2;
         int y = 2;
 
-        // 顶部标题：统一为黄色文字标题（原无动作按钮已替换，行位/行高不变）
+        // 顶部标题：黄色文字标题
         addRenderableWidget(new GuiTextLabel(cx, y, 310, 12,
                 "输入视频链接 → 播放到当前屏幕",
                 GuiTextLabel.Align.CENTER, GuiTextLabel.YELLOW));

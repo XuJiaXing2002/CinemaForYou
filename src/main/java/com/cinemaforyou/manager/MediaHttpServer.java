@@ -13,11 +13,8 @@ import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
-
-
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.util.Collections;
 import java.util.Enumeration;
 import java.util.Locale;
 import java.util.regex.Matcher;
@@ -49,7 +46,7 @@ public final class MediaHttpServer {
      *
      * <p>递归扫描子目录（含上传落盘的"玩家名"文件夹），但跳过上传临时目录
      * {@link #TEMP_DIR_NAME}，避免上传中的半成品出现在媒体库列表里。
-     * 直接放在根目录下的文件仍返回裸文件名（行为不变）。
+     * 直接放在根目录下的文件返回裸文件名。
      */
     public static java.util.List<String> listMediaFiles() {
         java.util.List<String> out = new java.util.ArrayList<>();

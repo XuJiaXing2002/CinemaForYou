@@ -7,13 +7,12 @@ import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.network.chat.Component;
-import net.minecraft.network.chat.Style;
 
 /**
  * 纯文本标签控件（无边框、无交互）：用于说明/标题/提示文字。
  *
  * <ul>
- *   <li>颜色默认黄色（用户要求不可点击文字高亮为黄）；</li>
+ *   <li>颜色由调用方传入（说明类文字通常用黄色）；</li>
  *   <li>对齐：LEFT = x 为左边缘；CENTER = x 为水平中心；RIGHT = x 为右边缘；</li>
  *   <li>居中的唯一基准是传入的中心线，不依赖其它控件。</li>
  * </ul>

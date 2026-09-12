@@ -53,7 +53,6 @@ public class ScreenSoundSettingsScreen extends ScrollableSettingsScreen {
     protected void buildContent() {
         int cx = this.width / 2;
         int w = Math.min(300, this.width - 40);
-        // 内容起始 y=2：标题贴屏幕顶部，去掉原来的顶部留白（行距保持不变）
         int y = 2;
         CinemaScreen screen = currentScreen();
         ClientConfig cfg = CinemaForYouClient.clientConfig;
@@ -214,8 +213,7 @@ public class ScreenSoundSettingsScreen extends ScrollableSettingsScreen {
      * 总设置入口：向所有屏幕的 owner 发送"播放申请"（服务端逐屏派发；owner 在聊天栏
      * 点「接受」后才会在该屏播放，点「拒绝」则不播；60 秒未响应自动过期）。
      *
-     * <p>不做忙碌预检：任何屏幕忙碌都可以随时发送申请
-     * （旧版"任一屏忙/队列非空则整体拒绝下发"的客户端检查已取消）；
+     * <p>不做忙碌预检：任何屏幕忙碌都可以随时发送申请；
      * 服务端仍是权威（无屏幕/权限/白名单校验都在服务端完成）。
      *
      * @return true = 申请已下发；false = 参数无效或没有屏幕
@@ -288,10 +286,6 @@ public class ScreenSoundSettingsScreen extends ScrollableSettingsScreen {
     private void addGrayLabel(String text, int cx, int y, int w) {
         addRenderableWidget(new GuiTextLabel(cx, y, w, 12, text,
                 GuiTextLabel.Align.CENTER, GuiTextLabel.GRAY_LIGHT));
-    }
-
-    private static String truncate(String s, int max) {
-        return s.length() <= max ? s : s.substring(0, max - 1) + "…";
     }
 
     @Override

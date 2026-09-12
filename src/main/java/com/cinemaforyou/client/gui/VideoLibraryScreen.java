@@ -33,7 +33,6 @@ public class VideoLibraryScreen extends Screen {
         }
     }
 
-
     private static final String[] VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".avi",
         ".flv", ".wmv", ".ts", ".m4v", ".mp3", ".m4a", ".wav", ".flac", ".ogg", ".aac"};
     private static final int ROWS_PER_PAGE = 5;
@@ -73,8 +72,7 @@ public class VideoLibraryScreen extends Screen {
         // 「＋队列」会改动对方屏幕状态 → 置灰
         boolean canManageQueue = screenId == null || ScreenControlScreen.canManageScreen(screenId);
 
-        // 顶部标题：统一为黄色文字标题（原灰色不可点击按钮框已替换，行位/行高不变）；
-        // 整体上移贴顶（原 y=24 → 2），下方搜索框/列表随之上移，行距不变
+        // 顶部标题：黄色文字标题，贴屏幕顶部
         addRenderableWidget(new GuiTextLabel(cx, 2, 310, 12,
                 screenId == null
                         ? "📂 本地视频库 → 向所有屏幕发送播放申请"

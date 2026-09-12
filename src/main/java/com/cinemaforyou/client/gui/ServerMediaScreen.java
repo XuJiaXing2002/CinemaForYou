@@ -28,13 +28,9 @@ import java.util.UUID;
  *       点击进入该玩家的明细页；直接放进服务器文件夹（无添加者记录）的文件归入
  *       「服务器文件」分组并<b>置顶</b>。主页顶部提供「浏览本地文件夹并上传」
  *       （仅 OP≥2，分块上传见 {@link MediaUploader}），含进度与取消。</li>
- *   <li><b>明细页</b>：沿用原有条目渲染与全部按钮（▶播放 / ＋队列 / ✕删除，逻辑不变）；
- *       条目标题带创建时间并沿用 {@link MarqueeText} 滚动显示；标题不再带添加者名字
- *       （主页已能确定是谁的）。</li>
+ *   <li><b>明细页</b>：单条媒体一行（▶播放 / ＋队列 / ✕删除）；
+ *       条目标题带创建时间并沿用 {@link MarqueeText} 滚动显示。</li>
  * </ul>
- *
- * <p>顶部与分组标题统一使用黄色文字标题（{@link GuiTextLabel} / §e 文本），
- * 不使用灰色不可点击按钮框。
  *
  * <ul>
  *   <li>无参构造：总设置入口——向所有屏幕的 owner 发送播放申请（首次点击提示确认，
@@ -131,7 +127,7 @@ public class ServerMediaScreen extends Screen {
         int left = cx - w / 2;
 
         List<String> files = MediaLibraryClient.cached();
-        // 顶部标题：统一黄色文字标题（无按钮框）
+        // 顶部标题：黄色文字标题
         String titleText = detailView
                 ? titleForDetail(files)
                 : (screenId == null
@@ -139,7 +135,6 @@ public class ServerMediaScreen extends Screen {
                         : (canManageQueue()
                                 ? "§e🖥 服务器媒体库（服务器 cinema/videos 目录）"
                                 : "§e🖥 服务器媒体库 · 非本人屏幕：仅可播放，＋队列已置灰"));
-        // 标题贴屏幕顶部（原 y=10 → 2），下方头部/列表随之上移，行距不变
         addRenderableWidget(new GuiTextLabel(cx, 2, w, 12, titleText,
                 GuiTextLabel.Align.CENTER, GuiTextLabel.YELLOW));
 
@@ -168,7 +163,6 @@ public class ServerMediaScreen extends Screen {
 
     /** 主页头部（上传按钮 + 进度/提示），返回列表起始 y。 */
     private int renderHomeHeader(int left, int w) {
-        // 整体上移贴顶（原 y=26 → 18），头部到列表的行距保持原样
         int y = 18;
         Button uploadBtn = Button.builder(
                 Component.literal("📤 浏览本地文件夹并上传（仅管理员 OP≥2）"),
@@ -264,7 +258,7 @@ public class ServerMediaScreen extends Screen {
         return true;
     }
 
-    // ───────────── 明细页（沿用原有条目渲染与按钮） ─────────────
+    // ───────────── 明细页（条目渲染与按钮） ─────────────
 
     private String titleForDetail(List<String> files) {
         int count = 0;
@@ -315,7 +309,7 @@ public class ServerMediaScreen extends Screen {
         for (int i = start; i < end; i++) {
             String name = mine.get(i);
             String url = MediaLibraryClient.sourceFor(name);
-            // 创建/上传时间并入条目标题（滚动显示），标题不再带添加者名字
+            // 创建/上传时间并入条目标题（滚动显示）
             var meta = MediaLibraryClient.metaOf(name);
             String timeText = (meta != null && meta.mtimeMs() > 0)
                     ? TIME_FMT.format(Instant.ofEpochMilli(meta.mtimeMs())
@@ -341,8 +335,7 @@ public class ServerMediaScreen extends Screen {
                     }
             ).bounds(left, y, playW, 20).build();
             addRenderableWidget(playBtn);
-            // 标题：文件名 + 时间；超宽时悬停滚动显示全部（与其他长标题一致）；
-            // 按用户要求去掉时间文字前的「创建」二字，直接显示时间
+            // 标题：文件名 + 时间；超宽时悬停滚动显示全部（与其他长标题一致）
             String shown = url.equals(pendingPlayUrl)
                     ? "§c⚠ 再点一次: 向所有屏幕发送播放申请 ▶ " + name
                     : "§a▶ " + name + (timeText != null

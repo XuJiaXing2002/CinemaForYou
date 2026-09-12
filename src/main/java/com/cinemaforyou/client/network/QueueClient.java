@@ -265,7 +265,7 @@ public final class QueueClient {
      * <p>每屏条目写 {@link ClientConfig#queueMirror}，全局播放队列条目写
      * {@link ClientConfig#globalQueueMirror}，保持两种范围的区分。
      *
-     * <p>{@link ClientConfig#save()} 已改为「标记脏 + 节流异步落盘」（最多每 500ms 真正写盘一次，
+     * <p>{@link ClientConfig#save()} 为「标记脏 + 节流异步落盘」（最多每 500ms 真正写盘一次，
      * 磁盘 IO 在单线程守护线程上做），这里的调用会与界面、标题线程的保存自动合并，不会卡顿。
      */
     private static void persistMirror() {

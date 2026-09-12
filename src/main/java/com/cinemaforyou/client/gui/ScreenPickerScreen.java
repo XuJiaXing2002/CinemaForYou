@@ -18,13 +18,11 @@ import java.util.Map;
 
 /**
  * 屏幕选择列表（Shift+按键 打开）：两级——玩家分组主页（玩家名 + 屏幕 N 个）→ 某玩家的屏幕列表；
- * 点某屏打开该屏幕的控制/设置，与玩家位置/朝向/距离无关。
+ * 点某屏 = {@code openChild(new ScreenControlScreen(screen.id()))}，打开该屏幕的控制/设置，
+ * 与玩家位置/朝向/距离无关。
  *
  * <p>两层都有搜索框（与 {@link TargetSearchScreen} 同款：标题下方、右侧 🔍），
  * 过滤规则同为 屏幕名/自定义名/创建者；分页与返回机制同其它列表页。
- *
- * <p>选中后的既有回调/语义不变：点屏幕行 = {@code openChild(new ScreenControlScreen(screen.id()))}
- * （原来的“点某一项打开该屏控制/设置”完全一致）。
  */
 public class ScreenPickerScreen extends ScrollableSettingsScreen {
 
@@ -45,7 +43,7 @@ public class ScreenPickerScreen extends ScrollableSettingsScreen {
     }
 
     /**
-     * 某玩家的屏幕列表页：只列出归属该玩家的屏幕，点某屏打开其控制页（回调与原来一致）。
+     * 某玩家的屏幕列表页：只列出归属该玩家的屏幕，点某屏打开其控制页。
      *
      * @param ownerKey   该玩家的 ownerId（"" = "未知玩家"分组）
      * @param ownerLabel 该玩家的显示名（未知为"未知玩家"）
@@ -81,7 +79,6 @@ public class ScreenPickerScreen extends ScrollableSettingsScreen {
         int cx = this.width / 2;
         int w = Math.min(320, this.width - 30);
         int left = cx - w / 2;
-        // 内容起始 y=2：标题贴屏幕顶部（与 TargetSearchScreen 一致）
         int y = 2;
 
         addRenderableWidget(new GuiTextLabel(cx, ry(y), w, 12,
@@ -110,7 +107,7 @@ public class ScreenPickerScreen extends ScrollableSettingsScreen {
         List<CinemaScreen> filtered = filter(all);
 
         // 主页：一行一个玩家（玩家名 + 屏幕 N 个）→ 该玩家屏幕列表；
-        // 明细页：该玩家的屏幕列表，点某屏打开其控制页（回调语义与原来一致）
+        // 明细页：该玩家的屏幕列表，点某屏打开其控制页
         List<PlayerGroup> groups = isHome() ? groupByOwner(filtered) : null;
         List<CinemaScreen> shown = isHome() ? null : screensOfOwner(filtered);
         int total = isHome() ? groups.size() : shown.size();
@@ -137,7 +134,7 @@ public class ScreenPickerScreen extends ScrollableSettingsScreen {
         } else {
             for (int i = start; i < end; i++) {
                 CinemaScreen screen = shown.get(i);
-                // 条目内容与原来一致：屏幕名 + 尺寸 + 当前片源；点击打开该屏控制（回调未改）
+                // 条目：屏幕名 + 尺寸 + 当前片源；点击打开该屏控制
                 String name = "§e" + screen.displayName()
                         + "§7 [" + screen.width() + "x" + screen.height() + "]";
                 String src = screen.sourceUrl() == null || screen.sourceUrl().isEmpty()

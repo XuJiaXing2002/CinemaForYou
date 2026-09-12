@@ -32,7 +32,6 @@ public class FileSelectScreen extends Screen {
         }
     }
 
-
     private static final String[] VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".avi",
         ".flv", ".wmv", ".ts", ".m4v", ".mp3", ".m4a", ".wav", ".flac", ".ogg", ".aac"};
     private static final int ROWS_PER_PAGE = 6;
@@ -64,7 +63,7 @@ public class FileSelectScreen extends Screen {
         clearWidgets();
         int cx = this.width / 2;
 
-        // 自定义 ID 输入框（整体上移贴屏幕顶部：原 y=24 → 2，列表/提示随之上移，行距不变）
+        // 自定义 ID 输入框（贴屏幕顶部）
         nameField = new EditBox(this.font, 200, 16,
                 Component.translatable("gui.cinemaforyou.url_input.name"));
         nameField.setX(cx - 100);
@@ -134,10 +133,10 @@ public class FileSelectScreen extends Screen {
     }
 
     /**
-     * 打开系统原生文件选择对话框（AWT FileDialog，原生 Windows 资源管理器窗口）。
+     * 打开系统原生文件选择对话框（Swing JFileChooser，原生 Windows 资源管理器窗口）。
      *
-     * <p>不再使用 Swing JFileChooser：它首次初始化需扫描全盘（数秒无任何反应）、
-     * 且对话框容易被全屏游戏窗口遮挡。原生 FileDialog 弹出快、总能置顶获得焦点。
+     * <p>用 Swing 而非 AWT FileDialog：当前环境下原生 FileDialog 会显示空白文件列表。
+     * 用置顶空父窗口避免对话框被全屏游戏窗口遮挡。
      * 起始目录为客户端配置的 {@code localVideosDir}，选中文件后回到主线程发包。
      */
     private void openSystemChooser() {
@@ -169,8 +168,7 @@ public class FileSelectScreen extends Screen {
 
         java.awt.EventQueue.invokeLater(() -> {
             try {
-                // Swing JFileChooser：经用户环境验证可正常显示文件列表；
-                // 原生 FileDialog 在此环境会显示空白文件列表，弃用。
+                // Swing JFileChooser：经实测可正常显示文件列表；原生 FileDialog 在此环境为空白列表
                 javax.swing.JFileChooser chooser = new javax.swing.JFileChooser(finalStart);
                 chooser.setDialogTitle("选择视频/音频文件");
                 chooser.setFileSelectionMode(javax.swing.JFileChooser.FILES_ONLY);

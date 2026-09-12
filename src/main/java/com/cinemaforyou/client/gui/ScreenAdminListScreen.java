@@ -23,8 +23,8 @@ import java.util.UUID;
 /**
  * 屏幕列表管理（两级：玩家分组主页 → 某玩家的屏幕列表）：
  * 主页一行一个玩家（玩家名 + 屏幕 N 个），点玩家行进入其屏幕列表；
- * 列表内搜索（名称/创建者/描述）、分页与改名/描述/删除/全部删除等管理按钮与二次确认
- * 全部沿用原实现，仅改层级与展示；非 OP 只看自己的可见性规则由服务端同步维持不变。
+ * 列表内搜索（名称/创建者/描述）、分页与改名/描述/删除/全部删除等管理按钮与二次确认；
+ * 非 OP 只看自己的可见性规则由服务端同步维持不变。
  */
 public class ScreenAdminListScreen extends ScrollableSettingsScreen {
 
@@ -88,7 +88,6 @@ public class ScreenAdminListScreen extends ScrollableSettingsScreen {
         int cx = this.width / 2;
         int w = Math.min(320, this.width - 30);
         int left = cx - w / 2;
-        // 内容起始 y=2：标题贴屏幕顶部，去掉原来的顶部留白（行距保持不变）
         int y = 2;
 
         addRenderableWidget(new GuiTextLabel(cx, ry(y), w, 12,
@@ -149,7 +148,7 @@ public class ScreenAdminListScreen extends ScrollableSettingsScreen {
             y += 2;
         }
 
-        // 底部固定操作区：删除全部（仅属于主页的全局管理动作，逻辑不变） + 分页 + 返回
+        // 底部固定操作区：删除全部（仅主页的全局管理动作） + 分页 + 返回
         int bottom = this.height - 32 + scrollY;
         addRenderableWidget(Button.builder(
                 Component.literal(pendingDeleteAll ? "§c⚠确认删除全部?" : "🗑 删除全部"),
@@ -179,7 +178,7 @@ public class ScreenAdminListScreen extends ScrollableSettingsScreen {
         finishContent(Math.max(y, bottom + 24));
     }
 
-    /** 某玩家的屏幕列表页：沿用原有条目渲染/滚动与管理按钮（重命名/描述/删除等逻辑不变）。 */
+    /** 某玩家的屏幕列表页：条目渲染/滚动与管理按钮（重命名/描述/删除等）。 */
     private void buildScreenList(int left, int w, List<CinemaScreen> filtered) {
         int cx = this.width / 2;
         List<CinemaScreen> shown = screensOfOwner(filtered);
@@ -263,8 +262,7 @@ public class ScreenAdminListScreen extends ScrollableSettingsScreen {
         boolean mine = isMine(s);
         int clipTop = 37;
         int clipBottom = this.height - 58;
-        // 第一行：屏幕明细按钮（点击打开控制；悬停才滚动显示全部）。
-        // 按用户要求按钮文案只保留 屏幕名字 + 尺寸 + 坐标，创建时间/创建者/描述/状态等一律去掉
+        // 第一行：屏幕明细按钮（点击打开控制；悬停才滚动显示全部）
         String meta = "§e" + s.displayName()
                 + "  §7" + s.width() + "x" + s.height()
                 + " §f@ " + s.center().toShortString();
@@ -326,7 +324,7 @@ public class ScreenAdminListScreen extends ScrollableSettingsScreen {
                         "§7仅创建者可改名/删除/改描述", GuiTextLabel.Align.CENTER, GuiTextLabel.YELLOW));
             }
         }
-        // 时间行（按用户要求移动到「改名」「删除」按钮下方；去掉时间文字前的「创建」二字，直接显示时间）
+        // 时间行
         if (rowVisible(y + 66, y + 80, clipTop, clipBottom)) {
             addRenderableWidget(new GuiTextLabel(cx, y + 68, w, 12,
                     "🕐 " + time + (mine ? "　（你可管理）" : "　（仅创建者可改）"),

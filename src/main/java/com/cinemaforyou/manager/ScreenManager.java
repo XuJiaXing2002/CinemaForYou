@@ -510,8 +510,7 @@ public class ScreenManager {
     /**
      * 广播播放（总设置入口）：不直接播放，而是向每个屏幕的 owner 发送一条"播放申请"。
      *
-     * <p>不再有整体忙碌拦截：无论各屏是否正在播放/队列是否非空，申请一律下发
-     * （旧版"任一屏忙则整体拒绝"的逻辑已取消）。
+     * <p>不做整体忙碌拦截：无论各屏是否正在播放/队列是否非空，申请一律下发。
      *
      * <p>语义：owner 在聊天栏点「接受」后才会在该屏播放（走 {@link #preparePlayUrl} +
      * {@link #applyPlay}，白名单/本地文件改写/大文件转封装延迟等既有机制原样生效）；
@@ -569,7 +568,7 @@ public class ScreenManager {
      * <p>权限：owner 播放自己的屏幕直接播放，不走此入口；其余玩家（含 OP/管理员）一律走此入口。
      *
      * @param queueIndex 队列条目播放申请对应的队列下标（-1 = 普通播放）；
-     *                   接受后按该条目播放，条目不删除，"自动播放下一个"语义不变
+     *                   接受后按该条目播放，条目不删除
      */
     public void requestPlayOnScreen(UUID id, String url, int queueIndex, ServerPlayer requester) {
         CinemaScreen s = screens.get(id);
@@ -975,12 +974,6 @@ public class ScreenManager {
                 "§c[CinemaForYou] 你没有控制此屏幕的权限（仅 owner 或管理员）"));
     }
 
-    /** 某屏队列的只读副本（不存在返回空列表）。 */
-    public List<QueueEntry> queueOf(UUID id) {
-        List<QueueEntry> q = queues.get(id);
-        return q == null ? List.of() : List.copyOf(q);
-    }
-
     /** 全部屏幕的队列条目 + 全局播放队列条目（供 S2C 全量同步，客户端按 global 标志区分）。 */
     public List<QueueEntry> allQueueEntries() {
         List<QueueEntry> out = new ArrayList<>();
@@ -1020,11 +1013,6 @@ public class ScreenManager {
     }
 
     // ───────────── 全局播放队列（总设置入口，不参与自动连播） ─────────────
-
-    /** 全局播放队列只读副本。 */
-    public List<QueueEntry> globalQueueEntries() {
-        return List.copyOf(globalQueue);
-    }
 
     /** 全局队列入口只对 OP（等级 ≥2）开放，与总设置的其它管理入口一致。 */
     private static boolean requireOp(ServerPlayer player) {
@@ -1701,10 +1689,6 @@ public class ScreenManager {
 
     private void notFound(ServerPlayer p, UUID id) {
         p.sendSystemMessage(Component.literal("§c未找到屏幕 " + id));
-    }
-
-    private String truncate(String s, int max) {
-        return s.length() <= max ? s : s.substring(0, max - 3) + "...";
     }
 
     /** BlockPos → long（用 BlockPos.asLong）。 */

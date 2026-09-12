@@ -18,7 +18,7 @@ import net.minecraft.network.chat.Component;
  * 供命令引用），输入视频源 URL 后点击"播放"，发送 {@link CreateScreenPayload}
  * 给服务端创建屏幕并播放。
  *
- * <p>26.2 注意事项（均为实测踩坑）：
+ * <p>26.2 注意事项：
  * <ul>
  *   <li>输入框必须用 {@code addRenderableWidget} 注册，{@code addWidget} 只注册
  *       事件不注册渲染，输入框会"隐形"</li>
@@ -33,7 +33,6 @@ public class UrlInputScreen extends Screen {
             super.onClose();
         }
     }
-
 
     private final BlockPos corner1;
     private final BlockPos corner2;
@@ -51,7 +50,6 @@ public class UrlInputScreen extends Screen {
 
     @Override
     protected void init() {
-        // 整体上移贴屏幕顶部（原以屏幕中心为基准 cy-52 起，现改为从 y=2 起），行距不变
         int cx = this.width / 2;
         int y = 2;
 

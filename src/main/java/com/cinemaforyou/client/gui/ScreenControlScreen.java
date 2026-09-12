@@ -1,47 +1,8 @@
-/*
- * Decompiled with CFR 0.152.
- * 
- * Could not load the following classes:
- *  com.cinemaforyou.client.ClientScreenManager
- *  com.cinemaforyou.client.config.ClientConfig
- *  com.cinemaforyou.client.gui.HistoryScreen
- *  com.cinemaforyou.client.gui.ScreenControlScreen$1
- *  com.cinemaforyou.client.gui.ScreenLinkInputScreen
- *  com.cinemaforyou.client.gui.ScreenQueueManagerScreen
- *  com.cinemaforyou.client.gui.ScreenSoundSettingsScreen
- *  com.cinemaforyou.client.gui.ScrollableSettingsScreen
- *  com.cinemaforyou.client.gui.ServerMediaScreen
- *  com.cinemaforyou.client.gui.UiText
- *  com.cinemaforyou.client.gui.VideoLibraryScreen
- *  com.cinemaforyou.client.network.ClientNetworkHandlers
- *  com.cinemaforyou.client.video.VideoPlayer
- *  com.cinemaforyou.data.CinemaScreen
- *  com.cinemaforyou.data.ScreenOrientation
- *  com.cinemaforyou.data.ScreenState
- *  com.cinemaforyou.network.ScreenActionPayload
- *  com.cinemaforyou.network.UpdateScreenSettingsPayload
- *  net.minecraft.client.Minecraft
- *  net.minecraft.client.gui.GuiGraphicsExtractor
- *  net.minecraft.client.gui.components.Button
- *  net.minecraft.client.gui.components.events.GuiEventListener
- *  net.minecraft.client.gui.screens.Screen
- *  net.minecraft.core.BlockPos
- *  net.minecraft.network.chat.Component
- */
 package com.cinemaforyou.client.gui;
 
 import com.cinemaforyou.CinemaForYouClient;
 import com.cinemaforyou.client.ClientScreenManager;
 import com.cinemaforyou.client.config.ClientConfig;
-import com.cinemaforyou.client.gui.HistoryScreen;
-import com.cinemaforyou.client.gui.ScreenControlScreen;
-import com.cinemaforyou.client.gui.ScreenLinkInputScreen;
-import com.cinemaforyou.client.gui.ScreenQueueManagerScreen;
-import com.cinemaforyou.client.gui.ScreenSoundSettingsScreen;
-import com.cinemaforyou.client.gui.ScrollableSettingsScreen;
-import com.cinemaforyou.client.gui.ServerMediaScreen;
-import com.cinemaforyou.client.gui.UiText;
-import com.cinemaforyou.client.gui.VideoLibraryScreen;
 import com.cinemaforyou.client.network.ClientNetworkHandlers;
 import com.cinemaforyou.client.video.VideoPlayer;
 import com.cinemaforyou.data.CinemaScreen;
@@ -55,8 +16,6 @@ import java.util.function.UnaryOperator;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
-import net.minecraft.client.gui.components.events.GuiEventListener;
-import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 
@@ -71,7 +30,6 @@ import net.minecraft.network.chat.Component;
 public class ScreenControlScreen
 extends ScrollableSettingsScreen {
     private static final int[] RESOLUTIONS = new int[]{360, 480, 720, 1080, 1440, 2160};
-    private static final int HEADER_H = 76;
     /** 跳转目标超过片尾时，钳制到「时长 − 本余量」而不是紧贴时长（详见 {@link #seekToMinute(int)}）。 */
     private static final long SEEK_END_MARGIN_MS = 1000L;
     /** 当前控制的屏幕（可由「当前屏幕选择」切换：切换后本页所有功能作用于新选中的屏幕）。 */
@@ -136,11 +94,10 @@ extends ScrollableSettingsScreen {
     }
 
     protected void buildContent() {
-        int[] edgeOrder;
         int cx = this.width / 2;
         int w = Math.min(310, this.width - 30);
         int left = cx - w / 2;
-        // 顶部信息面板贴屏幕顶部（原 y=2..76 → 0..74），内容起始 y 随之上移 2px（78 → 76）
+        // 顶部信息面板占 0..74，内容从 76 开始
         int y = 76;
         int rowH = 22;
         CinemaScreen screen = this.currentScreen();
@@ -197,8 +154,8 @@ extends ScrollableSettingsScreen {
         fwd10.active = canManage;
         this.addRenderableWidget(fwd10);
         // ── 跳转到指定分钟：紧贴四个 seek 按钮行的正下方（行距 22px = 20 高 + 2 间隙，与全页各行一致），
-        // 宽度/对齐与下方其它长条按钮同列（left, w）；点击打开数值输入框（复用 InputValueScreen，
-        // 与「音频延迟」同一套用法），输入分钟数后按「目标毫秒 − 当前播放位置」的差值走四个 seek 按钮同一套相对 seek。
+        // 宽度/对齐与下方其它长条按钮同列（left, w）；点击打开数值输入框（复用 InputValueScreen），
+        // 输入分钟数后按「目标毫秒 − 当前播放位置」的差值走四个 seek 按钮同一套相对 seek。
         Button jumpMinuteBtn = Button.builder(Component.literal("跳转到~分钟"), btn -> this.openJumpMinuteEditor()).bounds(left, this.ry(y += rowH), w, 20).build();
         jumpMinuteBtn.active = canManage;   // 进度跳转属控制类操作：与四个 seek 按钮置灰规则一致（owner 或 OP≥2）
         this.addRenderableWidget(jumpMinuteBtn);
@@ -228,8 +185,8 @@ extends ScrollableSettingsScreen {
         y = this.stepRow(cx, y, "\u97f3\u91cf", screen.volumePercent() + "%", (d, s) -> s.withSettings(s.brightnessPercent(), ScreenControlScreen.clamp(s.volumePercent() + d, 0, 100), s.resolutionHeight(), s.displayScalePercent()), canManage);
         y = this.stepRow(cx, y, "\u5927\u5c0f", screen.displayScalePercent() + "%", (d, s) -> s.withSettings(s.brightnessPercent(), s.volumePercent(), s.resolutionHeight(), ScreenControlScreen.clamp(s.displayScalePercent() + d, 25, 200)), canManage);
         y = this.stepRow(cx, y, "\u5206\u8fa8\u7387", screen.resolutionHeight() + "p", (d, s) -> s.withSettings(s.brightnessPercent(), s.volumePercent(), ScreenControlScreen.resByIndex(s.resolutionHeight(), d), s.displayScalePercent()), canManage);
-        // 长条按钮「曲率类型」：上下间距统一为 22px 行距 / 2px 间隙（与其它长条按钮一致）；
-        // 上方 stepRow 返回 +21，故这里 +1 补齐，下方 y += rowH 的行距不变
+        // 长条按钮「曲率类型」：与其它长条按钮同为 22px 行距 / 2px 间隙；
+        // 上方 stepRow 返回 +21，这里 +1 补齐
         int curvType = screen.curvatureType();
         Button curvBtn = Button.builder(Component.literal(("\u66f2\u7387\u7c7b\u578b: " + ScreenControlScreen.curvatureTypeLabel(curvType))), btn -> {
             int next = (curvType + 1) % 5;
@@ -251,8 +208,8 @@ extends ScrollableSettingsScreen {
         }
         y = this.stepRow(cx, y, "\u5de6\u53f3\u503e\u659c", screen.tiltDegH() + "\u00b0", (d, s) -> s.withTiltSettings(ScreenControlScreen.clamp(s.tiltDegH() + d, -180, 180), s.tiltDegV()), canManage);
         y = this.stepRow(cx, y, "\u4e0a\u4e0b\u4fef\u4ef0", screen.tiltDegV() + "\u00b0", (d, s) -> s.withTiltSettings(s.tiltDegH(), ScreenControlScreen.clamp(s.tiltDegV() + d, -180, 180)), canManage);
-        // 分组按钮「移动屏幕」（240 宽、居中）：上下间距统一为 22px 行距 / 2px 间隙（与其它长条按钮一致）；
-        // 上方 actionRow 返回 +21，故把原来的 +2 改为 +1 补齐，下方 y += 22 的行距不变
+        // 分组按钮「移动屏幕」（240 宽、居中）：与其它长条按钮同为 22px 行距 / 2px 间隙；
+        // 上方 actionRow 返回 +21，这里 +1 补齐
         Button moveGroupBtn = Button.builder(Component.literal("\u79fb\u52a8\u5c4f\u5e55"), btn -> {}).bounds(cx - 120, this.ry(y += 1), 240, 20).build();
         moveGroupBtn.active = canManage;   // 分组标题按钮：置灰表示整组不可用
         this.addRenderableWidget(moveGroupBtn);
@@ -263,26 +220,24 @@ extends ScrollableSettingsScreen {
         y = this.actionRow(cx, y, "\u00a7e\u6a2a\u79fb\u5c4f\u5e55 \u00a7f" + ScreenControlScreen.signed(this.moveValue(screen, hDir)), () -> this.moveScreenBy(hDir, -10), () -> this.moveScreenBy(hDir, -1), () -> this.moveScreenBy(hDir, 1), () -> this.moveScreenBy(hDir, 10), canManage);
         y = this.actionRow(cx, y, "\u00a7e\u7eb5\u79fb\u5c4f\u5e55 \u00a7f" + ScreenControlScreen.signed(this.moveValue(screen, vDir)), () -> this.moveScreenBy(vDir, -10), () -> this.moveScreenBy(vDir, -1), () -> this.moveScreenBy(vDir, 1), () -> this.moveScreenBy(vDir, 10), canManage);
         y = this.actionRow(cx, y, "\u00a7e\u524d\u540e\u79fb\u5c4f \u00a7f" + ScreenControlScreen.signed(this.moveValue(screen, nDir)), () -> this.moveScreenBy(nDir, -10), () -> this.moveScreenBy(nDir, -1), () -> this.moveScreenBy(nDir, 1), () -> this.moveScreenBy(nDir, 10), canManage);
-        // 分组按钮「屏边拉缩」（240 宽、居中）：上下间距统一为 22px 行距 / 2px 间隙（与其它长条按钮一致）；
-        // 上方 actionRow 返回 +21，故把原来的 +2 改为 +1 补齐，下方 y += 22 的行距不变
+        // 分组按钮「屏边拉缩」（240 宽、居中）：与其它长条按钮同为 22px 行距 / 2px 间隙；
+        // 上方 actionRow 返回 +21，这里 +1 补齐
         Button resizeGroupBtn = Button.builder(Component.literal("\u5c4f\u8fb9\u62c9\u7f29"), btn -> {}).bounds(cx - 120, this.ry(y += 1), 240, 20).build();
         resizeGroupBtn.active = canManage;   // 分组标题按钮：置灰表示整组不可用
         this.addRenderableWidget(resizeGroupBtn);
         y += 22;
-        int[] nArray = edgeOrder = new int[]{2, 3, 0, 1};
+        int[] nArray = new int[]{2, 3, 0, 1};
         int n = nArray.length;
         for (int i = 0; i < n; ++i) {
-            int edge;
-            int e = edge = nArray[i];
+            int e = nArray[i];
             y = this.actionRow(cx, y, "\u00a7e" + ScreenControlScreen.edgeName(e) + " \u00a7f" + ScreenControlScreen.signed(this.edgeValue(screen, e)), () -> this.resizeScreenEdge(e, -10), () -> this.resizeScreenEdge(e, -1), () -> this.resizeScreenEdge(e, 1), () -> this.resizeScreenEdge(e, 10), canManage);
         }
-        // 底部按钮：改名「关闭」、宽 240，与上一行操作按钮同列（cx-120 起）并紧贴其上（去掉原 y += rowH 的空档）
+        // 底部按钮「关闭」、宽 240，与上一行操作按钮同列（cx-120 起）并紧贴其上
         this.addRenderableWidget(Button.builder(Component.literal("\u5173\u95ed"), btn -> this.onClose()).bounds(cx - 120, this.ry(y), 240, 20).build());
         this.finishContent(y += 26);
     }
 
     public void extractRenderState(GuiGraphicsExtractor extractor, int mouseX, int mouseY, float partialTick) {
-        long pos;
         super.extractRenderState(extractor, mouseX, mouseY, partialTick);
         int cx = this.width / 2;
         int w = Math.min(310, this.width - 30);
@@ -298,7 +253,7 @@ extends ScrollableSettingsScreen {
         String src = screen.sourceUrl().isEmpty() ? "\u7247\u6e90: \uff08\u672a\u8bbe\u7f6e\uff0c\u7528\u4e0b\u65b9\u5165\u53e3\u6dfb\u52a0\uff09" : "\u7247\u6e90: " + ClientConfig.displayNameFor(screen.sourceUrl());
         extractor.centeredText(this.font, Component.literal(("\u00a7f" + UiText.fit(src, (int)w))), cx, 22, 0xFFFFFF);
         long dur = player != null ? player.getDurationMs() : 0L;
-        long l = pos = player != null ? player.getPositionMs() : 0L;
+        long pos = player != null ? player.getPositionMs() : 0L;
         if (pos < 0L) {
             pos = 0L;
         }
@@ -367,10 +322,9 @@ extends ScrollableSettingsScreen {
         if (s == ScreenState.PLAYING) {
             ClientNetworkHandlers.sendAction(ScreenActionPayload.pause((UUID)this.screenId));
         } else if (s == ScreenState.PAUSED) {
-            boolean ended;
             VideoPlayer p = this.currentPlayer();
             long dur = p != null ? p.getDurationMs() : 0L;
-            boolean bl = ended = p == null || p.hasEnded() || dur > 0L && p.getPositionMs() >= dur - 1500L;
+            boolean ended = p == null || p.hasEnded() || dur > 0L && p.getPositionMs() >= dur - 1500L;
             if (ended && current != null && !current.sourceUrl().isEmpty()) {
                 ClientNetworkHandlers.sendAction(ScreenActionPayload.play((UUID)this.screenId, current.sourceUrl()));
             } else {
@@ -389,9 +343,9 @@ extends ScrollableSettingsScreen {
     }
 
     /**
-     * 打开「跳转到~分钟」输入框：复用通用数值输入界面 {@link InputValueScreen}（与「音频延迟」完全同一套用法），
-     * 初始值留空（不预填当前分钟数，由用户直接输入目标分钟数）；非数字/负数直接忽略并提示
-     * （沿用既有的 try/catch 校验风格），超出视频时长的情况按"正常播完"处理（见 {@link #seekToMinute(int)}）。
+     * 打开「跳转到~分钟」输入框：复用通用数值输入界面 {@link InputValueScreen}。
+     * 初始值留空（不预填当前分钟数，由用户直接输入目标分钟数）；非数字/负数直接忽略并提示，
+     * 超出视频时长的情况按"正常播完"处理（见 {@link #seekToMinute(int)}）。
      */
     private void openJumpMinuteEditor() {
         this.openChild(new InputValueScreen(
@@ -442,15 +396,6 @@ extends ScrollableSettingsScreen {
         long safeTarget = Math.min(target, Math.max(0L, duration - margin));
         long base = player.getPositionMs();
         this.seekRelative(safeTarget - base);
-    }
-
-    private int addSettingRow(String label, String value, int cx, int y, UnaryOperator<CinemaScreen> increase, UnaryOperator<CinemaScreen> decrease) {
-        int left = cx - 105;
-        this.addRenderableWidget(Button.builder(Component.literal((label + " -")), btn -> this.updateSettings(decrease)).bounds(left, this.ry(y), 66, 20).build());
-        Button labelButton = Button.builder(Component.literal(("\u00a7e" + label + ": \u00a7f" + value)), btn -> {}).bounds(left + 68, this.ry(y), 74, 20).build();
-        this.addRenderableWidget(labelButton);
-        this.addRenderableWidget(Button.builder(Component.literal((label + " +")), btn -> this.updateSettings(increase)).bounds(left + 144, this.ry(y), 66, 20).build());
-        return y + 22;
     }
 
     /** 数值调节行；enabled=false 时整行（值标签 + 四个加减按钮）置灰不可点。 */
@@ -575,17 +520,6 @@ extends ScrollableSettingsScreen {
         Minecraft.getInstance().execute(this::rebuildWidgets);
     }
 
-    private int moveButtons(int cx, int y, String negLabel, String posLabel, int[] vec) {
-        int bw = 48;
-        int gap = 4;
-        int x0 = cx - 105;
-        this.addRenderableWidget(Button.builder(Component.literal((negLabel + "-10")), b -> this.moveScreenBy(vec, -10)).bounds(x0, this.ry(y), bw, 20).build());
-        this.addRenderableWidget(Button.builder(Component.literal((negLabel + "-1")), b -> this.moveScreenBy(vec, -1)).bounds(x0 + bw + gap, this.ry(y), bw, 20).build());
-        this.addRenderableWidget(Button.builder(Component.literal((posLabel + "+1")), b -> this.moveScreenBy(vec, 1)).bounds(x0 + 2 * (bw + gap), this.ry(y), bw, 20).build());
-        this.addRenderableWidget(Button.builder(Component.literal((posLabel + "+10")), b -> this.moveScreenBy(vec, 10)).bounds(x0 + 3 * (bw + gap), this.ry(y), bw, 20).build());
-        return y + 20;
-    }
-
     private void moveScreenBy(int[] vec, int steps) {
         CinemaScreen s = this.currentScreen();
         if (s == null) {
@@ -696,22 +630,6 @@ extends ScrollableSettingsScreen {
             case 4 -> "\u53cc\u5411\u51f9\u5f27(\u7403\u9762)";
             default -> "\u5e73\u9762";
         };
-    }
-
-    private static int previousResolution(int current) {
-        for (int i = 0; i < RESOLUTIONS.length; ++i) {
-            if (RESOLUTIONS[i] < current) continue;
-            return RESOLUTIONS[Math.max(0, i - 1)];
-        }
-        return RESOLUTIONS[RESOLUTIONS.length - 1];
-    }
-
-    private static int nextResolution(int current) {
-        for (int resolution : RESOLUTIONS) {
-            if (resolution <= current) continue;
-            return resolution;
-        }
-        return RESOLUTIONS[RESOLUTIONS.length - 1];
     }
 
     private static String formatTime(long ms) {

@@ -109,27 +109,10 @@ public final class MediaRemuxer {
     // ───────────── 播放拦截（ScreenManager.play 调用，服务端线程） ─────────────
 
     /**
-     * 若该文件需要自动转封装，则排入后台任务并返回 true（本次播放延后，
-     * 完成后自动播放）。返回 false 表示走正常播放流程。
-     */
-    public static boolean maybeDeferPlay(UUID screenId, ServerPlayer requester, String fileName) {
-        return maybeDeferPlay(List.of(screenId), requester, fileName, null);
-    }
-
-    /**
-     * 多屏版（总设置的广播播放）：一次为所有目标屏幕登记延后播放，只发一条提示；
-     * 转封装完成后逐屏自动开播。
-     *
-     * @param fileName 媒体库相对路径（可为"玩家名/视频.ts"子目录路径）
-     */
-    public static boolean maybeDeferPlay(List<UUID> screenIds, ServerPlayer requester, String fileName) {
-        return maybeDeferPlay(screenIds, requester, fileName, null);
-    }
-
-    /**
      * 多屏版 + 授权来源：{@code auth} 非 null 时该次延后播放来自被接受的播放申请，
      * 转封装完成后按授权播放处理（客户端据此在播完后不自动循环/连播）。
      *
+     * @param fileName 媒体库相对路径（可为"玩家名/视频.ts"子目录路径）
      * @param auth 播放授权来源，可为 null（owner 直接播放）
      */
     public static boolean maybeDeferPlay(List<UUID> screenIds, ServerPlayer requester,

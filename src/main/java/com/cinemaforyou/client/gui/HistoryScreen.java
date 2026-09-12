@@ -28,9 +28,9 @@ import java.util.UUID;
  *
  * <ul>
  *   <li>无参构造：总设置入口——主页按玩家分组汇总（一行一个玩家：玩家名 + 历史 N 条），
- *       点玩家行进入该玩家的历史明细页（明细页沿用现有条目渲染与全部按钮；
- *       播放/入队仍向所有屏幕发送申请，与全局入口一致）；</li>
- *   <li>{@link #HistoryScreen(UUID)}：屏幕控制页入口——只作用于该屏（保持原样）。</li>
+ *       点玩家行进入该玩家的历史明细页（明细页提供条目渲染与全部按钮；
+ *       播放/入队向所有屏幕发送申请，与全局入口一致）；</li>
+ *   <li>{@link #HistoryScreen(UUID)}：屏幕控制页入口——只作用于该屏。</li>
  * </ul>
  *
  * <p>数据来源：服务端 PlayLog（{@link PlayLogPayload.Entry}，含 playerUuid/playerName），
@@ -68,7 +68,7 @@ public class HistoryScreen extends ScrollableSettingsScreen {
         this(screenId, null, null);
     }
 
-    /** 全局主页点某玩家 → 该玩家的历史明细页（播放/入队仍作用于所有屏幕，逻辑不变）。 */
+    /** 全局主页点某玩家 → 该玩家的历史明细页（播放/入队作用于所有屏幕）。 */
     public static HistoryScreen forPlayer(String playerKey, String playerLabel) {
         return new HistoryScreen(null, playerKey, playerLabel);
     }
@@ -106,7 +106,6 @@ public class HistoryScreen extends ScrollableSettingsScreen {
         int cx = this.width / 2;
         int w = Math.min(330, this.width - 30);
         int left = cx - w / 2;
-        // 内容起始 y=2：标题贴屏幕顶部，去掉原来的顶部留白（行距保持不变）
         int y = 2;
 
         addRenderableWidget(new GuiTextLabel(cx, ry(y), w, 12,
@@ -194,7 +193,7 @@ public class HistoryScreen extends ScrollableSettingsScreen {
         return screenId == null || ScreenControlScreen.canManageScreen(screenId);
     }
 
-    /** 标题文案：该屏 / 玩家明细 / 玩家分组主页（仅展示，行为不变）。 */
+    /** 标题文案：该屏 / 玩家明细 / 玩家分组主页。 */
     private String headerText() {
         if (screenId != null) {
             return canManageQueue()

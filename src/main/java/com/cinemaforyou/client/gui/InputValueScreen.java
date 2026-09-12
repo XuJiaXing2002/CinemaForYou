@@ -42,7 +42,6 @@ public class InputValueScreen extends ScrollableSettingsScreen {
     protected void buildContent() {
         int cx = this.width / 2;
         int w = Math.min(300, this.width - 40);
-        // 内容起始 y=2：标题贴屏幕顶部，去掉原来的顶部留白（行距保持不变）
         int y = 2;
 
         addRenderableWidget(new GuiTextLabel(cx, ry(y), w, 12,

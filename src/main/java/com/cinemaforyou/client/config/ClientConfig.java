@@ -328,20 +328,6 @@ public class ClientConfig {
         save();
     }
 
-    /** 删除单条历史（按 URL），并保存。 */
-    public void removeHistory(String url) {
-        if (history == null || url == null) return;
-        history.removeIf(i -> i.url != null && i.url.equals(url));
-        save();
-    }
-
-    /** 清空全部播放历史，并保存。 */
-    public void clearHistory() {
-        if (history == null) return;
-        history.clear();
-        save();
-    }
-
     /** 某屏实际生效的播完行为（0/未设置 = 跟随全局默认）。 */
     public int playModeFor(String screenId) {
         Integer m = screenPlayMode.get(screenId);
@@ -480,7 +466,7 @@ public class ClientConfig {
     private long lastSaveAtMs = 0L;
 
     /**
-     * 保存当前配置（异步 + 节流）。方法签名与旧版同步版一致，调用方无需改动。
+     * 保存当前配置（异步 + 节流）。
      *
      * <p>本方法立即返回、不做磁盘 IO：只标记「脏」并按节流窗口调度一次后台写盘，
      * 最多每 {@link #SAVE_THROTTLE_MS} 毫秒真正写文件一次（窗口内多次调用自动合并），
@@ -584,11 +570,6 @@ public class ClientConfig {
     }
 
     // ───────────── 便捷方法 ─────────────
-
-    /** 是否使用线性纹理过滤。 */
-    public boolean isLinearFiltering() {
-        return "linear".equalsIgnoreCase(textureFiltering);
-    }
 
     /** 默认音量映射到 0.0-1.0 浮点。 */
     public float volumeFloat() {

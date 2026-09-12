@@ -27,8 +27,7 @@ import java.util.UUID;
 /**
  * 播放队列管理（服务端队列的客户端只读镜像 + 操作入口）。
  *
- * <p>顶部统一标题行「播放队列 → 向所有屏幕发送播放申请」（与原来一致：黄色文字、无按钮；
- * 原独立的「向所有屏幕发送播放申请」区块标题行与「全局列表为空」空状态行已按要求合并/删除）。
+ * <p>顶部统一标题行「播放队列 → 向所有屏幕发送播放申请」（黄色文字、无按钮）。
  * 标题下方为搜索框（沿用 {@link TargetSearchScreen} 的实现风格与位置），
  * 过滤当前层级的列表：玩家名 / 屏幕名 / 队列视频标题。
  *
@@ -39,14 +38,14 @@ import java.util.UUID;
  *       「🎬 全局播放队列（N 首）」入口；点玩家 → 该玩家的屏幕列表 {@link #forPlayer}，
  *       点屏幕 → 该屏队列明细 {@link #ScreenQueueManagerScreen(UUID)}（点条目 = 从该屏队列立即播放）；
  *       点「全局播放队列」行 → 全局专用队列明细 {@link #forGlobalQueue()}
- *       （原区块 A：管理员手动点条目，两次点击确认后向所有屏幕的 owner 发送播放申请）；</li>
+ *       （管理员手动点条目，两次点击确认后向所有屏幕的 owner 发送播放申请）；</li>
  *   <li>屏幕控制入口 {@link #forScreenList()} ＝两级：主页即全部屏幕列表（不显示玩家层级），
  *       点屏幕 → 该屏队列明细。</li>
  * </ul>
  *
- * <p>队列明细沿用原渲染与按钮（▲▼ 调序、✕ 删除、点条目名播放/发申请），
+ * <p>队列明细提供 ▲▼ 调序、✕ 删除、点条目名播放/发申请，
  * 删除/清空/上移下移都发到服务端执行（服务端为唯一数据源：屏幕队列 owner 或 OP≥2 可操作，
- * 全局队列仅 OP≥2），删除与清空沿用两次点击确认。
+ * 全局队列仅 OP≥2），删除与清空均为两次点击确认。
  *
  * <p>权限（与服务端 {@code ScreenManager.canControl} 一致）：非本人屏幕且非 OP≥2 时，
  * 队列的增（＋队列入口）/删（✕）/清空/上移下移一律置灰并显示灰字提示；
@@ -60,7 +59,7 @@ public class ScreenQueueManagerScreen extends Screen {
         }
     }
 
-    /** 每页行数（顶部新增搜索框后由 8 调整为 7，分页机制不变）。 */
+    /** 每页行数。 */
     private static final int ROWS_PER_PAGE = 7;
     /** 列表起始 y：标题（2..14）+ 搜索框（17..37）之后，与 TargetSearchScreen 的布局一致。 */
     private static final int ROWS_TOP = 41;
@@ -80,7 +79,7 @@ public class ScreenQueueManagerScreen extends Screen {
         SCREEN_LIST,
         /** 某屏队列明细（总设置入口第三级 / 屏幕控制入口第二级）。 */
         SCREEN_DETAIL,
-        /** 全局专用队列明细（原区块 A）。 */
+        /** 全局专用队列明细。 */
         GLOBAL_DETAIL
     }
 
@@ -183,7 +182,7 @@ public class ScreenQueueManagerScreen extends Screen {
         return new ScreenQueueManagerScreen(View.SCREEN_LIST, null, null, null);
     }
 
-    /** 全局专用队列明细（原区块 A：点条目两次确认后向所有屏幕发播放申请）。 */
+    /** 全局专用队列明细（点条目两次确认后向所有屏幕发播放申请）。 */
     public static ScreenQueueManagerScreen forGlobalQueue() {
         return new ScreenQueueManagerScreen(View.GLOBAL_DETAIL, null, null, null);
     }
@@ -211,8 +210,7 @@ public class ScreenQueueManagerScreen extends Screen {
         int left = cx - w / 2;
         List<Row> rows = buildRows();
 
-        // 顶部标题行：整体黄色文字标题（GuiTextLabel，无按钮/灰框），贴屏幕顶部；
-        // 「播放队列 → 向所有屏幕发送播放申请」——原独立区块标题行已合并到这里
+        // 顶部标题行：黄色文字标题（GuiTextLabel，无按钮），贴屏幕顶部
         addRenderableWidget(new GuiTextLabel(cx, 2, w, 12,
                 TITLE_TEXT,
                 GuiTextLabel.Align.CENTER, GuiTextLabel.YELLOW));
@@ -240,7 +238,7 @@ public class ScreenQueueManagerScreen extends Screen {
         }
 
         if (rows.isEmpty()) {
-            // 空状态提示（全局专用队列明细已按要求不再显示空状态行，此处返回 null）
+            // 空状态提示（emptyHint 返回 null 时不显示）
             String hint = emptyHint();
             if (hint != null) {
                 addRenderableWidget(Button.builder(Component.literal(hint), btn -> {})
@@ -327,7 +325,7 @@ public class ScreenQueueManagerScreen extends Screen {
                             + "」队列为空：在「📂 本地视频」或「🕘 历史」里点 ＋队列 添加";
         }
         if (view == View.GLOBAL_DETAIL) {
-            // 全局专用队列的空状态行已按要求删除：仅在搜索无结果时提示
+            // 全局专用队列无条目时不显示空状态行：仅在搜索无结果时提示
             return searching ? "§7没有匹配的队列条目" : null;
         }
         return searching ? "§7没有匹配的屏幕" : "§7暂无已知屏幕（创建屏幕后可在此查看各屏队列）";
@@ -337,8 +335,8 @@ public class ScreenQueueManagerScreen extends Screen {
     private int renderRow(Row row, int left, int w, int y) {
         switch (row.kind()) {
             case GLOBAL_QUEUE_LINK -> {
-                // 全局专用队列入口（原区块 A）：一行汇总 + 数量；点进去是该队列明细，
-                // 明细管理与"点条目→两次确认→向所有屏幕发申请"逻辑保持现状。
+                // 全局专用队列入口：一行汇总 + 数量；点进去是该队列明细，
+                // 明细管理与"点条目→两次确认→向所有屏幕发申请"逻辑一致。
                 // 该行固定在主页最上方，不参与搜索过滤（保证入口不丢）。
                 String label = UiText.fit(
                         "§b🎬 全局播放队列（" + QueueClient.globalCount() + " 首）", w - 10);
@@ -381,13 +379,13 @@ public class ScreenQueueManagerScreen extends Screen {
                 CinemaScreen s = row.screen();
                 if (s == null) return y;
                 // 屏幕列表：一行一个屏幕（空队列也显示，队列 0 首），文案 = 屏幕名 + 坐标 + 队列数量
-                // 点整行 → 进入该屏队列明细页（条目渲染/按钮逻辑完全不变）
+                // 点整行 → 进入该屏队列明细页
                 String label = "§b📺 " + s.displayName() + " @ " + s.center().toShortString()
                         + "  §7队列 " + QueueClient.countFor(s.id()) + " 首";
                 addRenderableWidget(Button.builder(Component.literal(label),
                         btn -> GuiNav.open(this, new ScreenQueueManagerScreen(s.id())))
                         .bounds(left, y, w - 38, 20).build());
-                // 行右侧保留"清空该屏队列"（两次点击确认，与原来一致）；非本人屏幕且非 OP 置灰
+                // 行右侧保留"清空该屏队列"（两次点击确认）；非本人屏幕且非 OP 置灰
                 String key = s.id().toString();
                 boolean hasEntries = QueueClient.countFor(s.id()) > 0;
                 Button clearBtn = Button.builder(
@@ -400,7 +398,7 @@ public class ScreenQueueManagerScreen extends Screen {
                 return y + 22;
             }
             case SCREEN_HEADER -> {
-                // 单屏明细页组头：统一为黄色文字标题（原灰色不可点击按钮框已替换，行为不变）
+                // 单屏明细页组头：黄色文字标题
                 CinemaScreen s = row.screen();
                 if (s == null) return y;
                 addRenderableWidget(new GuiTextLabel(this.width / 2, y + 4, w, 12,
@@ -536,7 +534,7 @@ public class ScreenQueueManagerScreen extends Screen {
                 }
             }
             case GLOBAL_DETAIL -> {
-                // 空队列：不显示任何行（原空状态提示行已按用户要求删除）
+                // 空队列：不显示任何行
                 List<Integer> idx = filteredEntryIndexes(QueueClient.globalEntries());
                 if (idx.isEmpty()) return rows;
                 rows.add(Row.globalHeader());
@@ -675,7 +673,7 @@ public class ScreenQueueManagerScreen extends Screen {
         return screenId == null ? null : ClientScreenManager.get().getScreen(screenId);
     }
 
-    // ───────────── 队列操作（与原来一致：乐观本地更新 + 服务端执行 + 两次确认） ─────────────
+    // ───────────── 队列操作（乐观本地更新 + 服务端执行 + 两次确认） ─────────────
 
     /** 上移/下移：乐观本地更新 + 服务端执行（服务端广播随后覆盖）；sid=null 为全局队列，否则作用于该屏队列。 */
     private void move(UUID sid, int index, int delta) {
@@ -779,7 +777,7 @@ public class ScreenQueueManagerScreen extends Screen {
         QueueClient.localClear(s.id());
         ClientNetworkHandlers.sendQueueClear(s.id());
         if (view == View.SCREEN_DETAIL) {
-            page = 0;   // 单屏明细页原行为：清空后回到第一页
+            page = 0;   // 单屏明细页：清空后回到第一页
         } else {
             // 屏幕列表页：清空某屏队列后行数变少，当前页跟随收敛
             page = Math.min(page, Math.max(0, (buildRows().size() - 1) / ROWS_PER_PAGE));

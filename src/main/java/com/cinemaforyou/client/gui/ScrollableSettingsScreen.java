@@ -39,11 +39,6 @@ public abstract class ScrollableSettingsScreen extends Screen {
         GuiNav.open(this, child);
     }
 
-    /** 根界面专用打开（V 键等从游戏内打开时使用，无上级）。 */
-    public static void openRoot(ScrollableSettingsScreen screen) {
-        GuiNav.open(null, screen);
-    }
-
     /** 返回上级界面（存在时），否则按默认关闭（退出到游戏）。 */
     @Override
     public void onClose() {

@@ -351,11 +351,6 @@ public class VideoPlayer {
         pendingRelease = true;
     }
 
-    /** release() 是否已发起（幂等/排空判断用）。 */
-    public boolean isReleaseStarted() {
-        return releaseStarted;
-    }
-
     /** release() 发起时刻（毫秒），上层据此对超时未排空的旧播放器做兜底丢弃。 */
     public long getReleasedAtMs() {
         return releasedAtMs;
@@ -1106,8 +1101,7 @@ public class VideoPlayer {
         } else {
             long newMaster = wallBasePosMs + (nowWall - wallBaseWallMs);
             // 钳制：墙钟回退不得超过已知时长——grabber 卡死不返回帧也不 EOF 时，
-            // 墙钟会无限增长导致进度条跑出视频总时间（用户反馈"15秒视频卡死后
-            // 进度条继续走到 20+ 秒"）。限制在 durationMs，让画面停在末帧状态，
+            // 墙钟会无限增长导致进度条跑出视频总时间。限制在 durationMs，让画面停在末帧状态，
             // 等看门狗/循环逻辑处理。
             if (durationMs > 0 && newMaster > durationMs) {
                 newMaster = durationMs;
@@ -1487,8 +1481,8 @@ public class VideoPlayer {
                         && nowMs - wallBaseWallMs > 3500
                         && nowMs - lastForcedActionAtMs > 3000) {
                     // 无音频流且从未成功上传帧（典型：循环播放重开的透明 WebM）：
-                    // 本地文件初始化用不了几秒，3.5s 仍无画面即判定异常，直接重开解码流。
-                    // 原 8s 太慢，会让用户明显感觉"卡住后等很久才恢复"。
+                    // 本地文件初始化用不了几秒，3.5s 仍无画面即判定异常，直接重开解码流
+                    // （更长的等待会让用户明显感觉"卡住后等很久才恢复"）。
                     lastForcedActionAtMs = nowMs;
                     reopenRequested = true;
                     LOGGER.warn("[CinemaForYou] 无音频流且 {}ms 内无画面上传，重开解码流", idle);

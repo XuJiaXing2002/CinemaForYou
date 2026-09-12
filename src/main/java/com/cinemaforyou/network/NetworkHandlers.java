@@ -473,7 +473,7 @@ public final class NetworkHandlers {
         //  - 播放类（PLAY）：只有该屏 owner 直接播放；非 owner（含 OP/管理员）不直接播放，
         //    一律向该屏 owner 发播放申请（ScreenManager.play 内部对非 owner 再做兜底，
         //    覆盖 /cinema play 命令、转封装完成回调等其它单屏播放入口）；
-        //  - 控制类（暂停/恢复/停止/跳转/失败上报）：沿用"owner 或 OP≥2"校验，语义不变。
+        //  - 控制类（暂停/恢复/停止/跳转/失败上报）：沿用"owner 或 OP≥2"校验。
         CinemaScreen screen = mgr.get(id);
         if (screen != null) {
             if (payload.action() == ScreenActionPayload.Action.PLAY

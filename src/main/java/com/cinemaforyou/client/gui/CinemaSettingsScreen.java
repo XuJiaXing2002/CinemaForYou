@@ -21,8 +21,7 @@ import java.util.List;
  * <p>内容：渲染/音量/声音默认值、cookies（浏览器下拉选择 + cookies.txt 文件浏览）、
  * 本地视频目录，以及播完行为与本地视频/播放历史/服务器媒体库/播放队列入口。
  *
- * <p>本页所有播放入口不再针对单个目标屏幕：播放会对所有已存在的屏幕一起下发
- * （首次点击提示确认，再点一次才真正播放；任一屏幕忙碌则整体不下发）。
+ * <p>本页所有播放入口作用于所有已存在的屏幕：首次点击提示确认，再点一次才真正下发。
  * 超出屏幕高度时可用滚轮 + 右侧滚动条滚动。
  */
 public class CinemaSettingsScreen extends ScrollableSettingsScreen {
@@ -91,7 +90,6 @@ public class CinemaSettingsScreen extends ScrollableSettingsScreen {
         // 整行宽度控件几何：所有长条按钮/输入框共用，保证左右边界对齐
         int blockW = Math.min(300, this.width - 30);
         int blockX = cx - blockW / 2;
-        // 内容起始 y=2：首行说明文字贴屏幕顶部，去掉原来的顶部留白（行距保持不变）
         int y = 2, rowH = 21;
         int maxW = Math.min(310, this.width - 20);
         if (!browserOpen) {
@@ -107,7 +105,7 @@ public class CinemaSettingsScreen extends ScrollableSettingsScreen {
         y += rowH - 11;
 
         // ── 顶部全局设置项（前 5 个）：与下方长条按钮同 x、同宽（整行宽度）、同高（20），行距 21；
-        //    原「左侧黄色标题 + 右侧短按钮」两列布局已取消，标题并入按钮文案：功能名: 当前值（点击…）
+        //    标题并入按钮文案：功能名: 当前值（点击…）
         //    这 5 个都是全局设置：非 OP 置灰不可点（与下方入口/yt-dlp 同一套 OP 判定），OP 正常可用 ──
 
         // ── 渲染距离（全局默认值） ──
@@ -195,7 +193,7 @@ public class CinemaSettingsScreen extends ScrollableSettingsScreen {
         addRenderableWidget(modeBtn);
         y += rowH;
 
-        // ── yt-dlp 网络代理（TikTok 等直连不通的站点用）：播放行为区块内、排在已有控件下方 ──
+        // ── yt-dlp 网络代理（TikTok 等直连不通的站点用） ──
         int behaviorW = Math.min(300, this.width - 30);
         String proxyVal = CinemaForYouClient.clientConfig != null
                 ? CinemaForYouClient.clientConfig.ytDlpProxy : "";
@@ -219,7 +217,7 @@ public class CinemaSettingsScreen extends ScrollableSettingsScreen {
                 }
         ).bounds(cx - behaviorW / 2, ry(y), behaviorW, 20).build();
         addRenderableWidget(proxyBtn);
-        y += rowH;   // 原下方"例: http://127.0.0.1:7890…"提示行已删除，后续控件相应上移
+        y += rowH;
 
         // ── 本地视频列表 / 播放历史 / 服务器媒体库（总设置入口：播放到所有屏幕） ──
         int blockW2 = Math.min(300, this.width - 30);
@@ -335,7 +333,7 @@ public class CinemaSettingsScreen extends ScrollableSettingsScreen {
             y += BROWSERS.size() * itemH; // 为展开的选项预留纵向空间
         }
 
-        // ── yt-dlp 自动下载（需要 OP） / 选择预览框 / 调试信息：这三个开关整组下移到 cookies 区块之后 ──
+        // ── yt-dlp 自动下载（需要 OP） / 选择预览框 / 调试信息 ──
         Button ytDlpBtn = toggleButton(blockX, ry(y), blockW, "yt-dlp 自动下载",
                 autoDownloadYtDlp, v -> autoDownloadYtDlp = v);
         if (!isOp) {
@@ -354,7 +352,7 @@ public class CinemaSettingsScreen extends ScrollableSettingsScreen {
                 showDebugInfo, v -> showDebugInfo = v));
         y += rowH;
 
-        y += 6;   // 最后一个内容按钮（调试信息）→ 保存/取消 的额外间距（保持原底部 7px，内容总高不变）
+        y += 6;   // 最后一个内容按钮（调试信息）→ 保存/取消 的额外间距
 
         // ── 保存 / 取消 ──
         addRenderableWidget(Button.builder(
@@ -386,9 +384,9 @@ public class CinemaSettingsScreen extends ScrollableSettingsScreen {
     /**
      * 当前玩家是否 OP（权限等级 ≥2）。
      *
-     * <p>26.2 权限 API 已重构：客户端等价于旧版 {@code player.hasPermissions(2)} 的写法是
-     * {@code player.permissions().hasPermission(new Permission.HasCommandLevel(GAMEMASTERS))}
-     * （客户端权限集由服务端同步，与服务端 {@code canControl} 判定一致）。
+     * <p>26.2 客户端权限判定写法：{@code player.permissions().hasPermission(
+     * new Permission.HasCommandLevel(GAMEMASTERS))}（客户端权限集由服务端同步，
+     * 与服务端 {@code canControl} 判定一致）。
      */
     private static boolean hasOpPermission() {
         net.minecraft.client.player.LocalPlayer p = Minecraft.getInstance().player;
@@ -397,12 +395,6 @@ public class CinemaSettingsScreen extends ScrollableSettingsScreen {
     }
 
     // ───────────── 辅助 ─────────────
-
-    /** 左对齐说明文字（黄色高亮）。x = 左边缘，y = 文字顶部。 */
-    private void addLabel(String text, int x, int y, int w) {
-        addRenderableWidget(new GuiTextLabel(x, y + 3, w, 12, text,
-                GuiTextLabel.Align.LEFT, GuiTextLabel.YELLOW));
-    }
 
     /** 以屏幕中心线居中的文字（黄色）。x = 中心线坐标。 */
     private void addCenteredLabel(String text, int cx, int y, int w) {
@@ -485,10 +477,6 @@ public class CinemaSettingsScreen extends ScrollableSettingsScreen {
             case 3 -> "播完暂停（保留末帧）";
             default -> "停止";
         };
-    }
-
-    private static String truncate(String s, int max) {
-        return s.length() <= max ? s : s.substring(0, max - 1) + "…";
     }
 
     /** 系统文件对话框（选择 cookies.txt）。Swing EDT，结果回主线程写回输入框。 */
