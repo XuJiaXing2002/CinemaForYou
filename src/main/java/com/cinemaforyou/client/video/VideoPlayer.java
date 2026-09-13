@@ -218,7 +218,11 @@ public class VideoPlayer {
         this.screenId = screenId;
         this.screen = screen;
         this.sourceUrl = sourceUrl;
-        avutil.av_log_set_level(avutil.AV_LOG_ERROR);
+        // 此处绝不能引用 avutil/FFmpeg 等 JavaCPP 类：那会触发 jniavutil 类初始化，
+        // 而此时 natives 可能尚未注册（首次启动需下载），一旦失败该类将永久不可用。
+        // ffmpeg 日志级别已移到 NativeRuntime 注册成功后设置；这里仅非阻塞推动后台准备，
+        // 真正使用原生库前由解码线程的 NativeRuntime.ensureBlocking() 保证已注册。
+        NativeRuntime.startBackground();
     }
 
     public String getSourceUrl() {

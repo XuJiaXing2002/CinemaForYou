@@ -109,34 +109,61 @@ public final class NativeRuntime {
 
     private static void ensureNow() {
         try {
+            String platform;
+            Path root;
             Path ffDir;
             Path jcDir;
             try {
-                String platform = detectPlatform();
-                Path root = nativesRoot(platform);
-                Path ffBase = root.resolve("org/bytedeco/ffmpeg/" + platform);
-                Path jcBase = root.resolve("org/bytedeco/javacpp/" + platform);
-                prepare(platform, root, ffBase, jcBase);
-                ffDir = ffBase;
-                jcDir = jcBase;
+                platform = detectPlatform();
+                root = nativesRoot(platform);
+                ffDir = root.resolve("org/bytedeco/ffmpeg/" + platform);
+                jcDir = root.resolve("org/bytedeco/javacpp/" + platform);
             } catch (Exception e) {
                 fail("解码组件准备失败: " + e.getMessage());
                 return;
             }
-            if (!hasNativeLib(ffDir, "jniavutil")) {
-                fail("解码组件文件缺失（目录 " + ffDir + "）");
+            try {
+                prepare(platform, root, ffDir, jcDir);
+            } catch (Exception e) {
+                fail("解码组件准备失败（平台 " + platform + "）: " + e.getMessage());
                 return;
             }
-            // 必须在首次使用 JavaCPP 前设置（解码线程都先过 ensureBlocking）
-            System.setProperty("org.bytedeco.javacpp.platform.linkpath",
-                    ffDir.toAbsolutePath() + java.io.File.pathSeparator
-                            + jcDir.toAbsolutePath());
-            System.setProperty("org.bytedeco.javacpp.platform.preloadpath",
-                    jcDir.toAbsolutePath() + java.io.File.pathSeparator
-                            + ffDir.toAbsolutePath());
+            // 文件完整性：按平台后缀确认两个关键原生库确实存在于各自目录
+            boolean ffOk = nativeLibExists(ffDir, platform, "jniavutil");
+            boolean jcOk = nativeLibExists(jcDir, platform, "jnijavacpp");
+            if (!ffOk || !jcOk) {
+                fail("解码组件文件缺失（平台 " + platform + "，jniavutil=" + ffOk
+                        + "，jnijavacpp=" + jcOk + "，目录 " + root.toAbsolutePath() + "）");
+                return;
+            }
+            // 注册：无论缓存命中（目录已存在）还是本次下载，只要决定用该目录就必须注册，
+            // 否则 JavaCPP 在首次引用 avutil 等类时会找不到 jniavutil。
+            try {
+                registerLibraryPaths(ffDir, jcDir);
+            } catch (Throwable t) {
+                fail("解码组件路径注册失败（平台 " + platform + "）: " + t);
+                return;
+            }
             synchronized (LOCK) {
                 ready = true;
                 lastFailure = null;
+            }
+            // 诊断：注册成功后打印平台、目录绝对路径、关键库是否存在及已生效的搜索路径
+            LOGGER.info("[CinemaForYou] 解码原生库注册成功: platform={}, 平台目录={}, "
+                            + "jniavutil={}({}), jnijavacpp={}({}), linkpath={}, preloadpath={}",
+                    platform, root.toAbsolutePath(),
+                    ffOk, libFileName(platform, "jniavutil"),
+                    jcOk, libFileName(platform, "jnijavacpp"),
+                    System.getProperty("org.bytedeco.javacpp.platform.linkpath"),
+                    System.getProperty("org.bytedeco.javacpp.platform.preloadpath"));
+            // ffmpeg 日志级别：必须在注册成功之后才可引用 avutil（其类初始化会加载
+            // jniavutil）。原实现放在 VideoPlayer 构造函数里，会在注册前触发类初始化
+            // 导致 UnsatisfiedLinkError 且该类永久不可用，现统一移到此处。
+            try {
+                org.bytedeco.ffmpeg.global.avutil.av_log_set_level(
+                        org.bytedeco.ffmpeg.global.avutil.AV_LOG_ERROR);
+            } catch (Throwable t) {
+                LOGGER.warn("[CinemaForYou] 设置 FFmpeg 日志级别失败（不影响播放）", t);
             }
             // 预热 libvpx 软解码器：首次 avcodec_open2 需要分配 vpx_codec_ctx 及
             // 初始化查找表，耗时可达数百毫秒到 1~2 秒。若在用户首次播放透明 WebM
@@ -161,6 +188,27 @@ public final class NativeRuntime {
         }
     }
 
+    /**
+     * 设置 JavaCPP 库搜索路径属性（linkpath/preloadpath），并强制重载其平台属性缓存。
+     *
+     * <p>两个目录都必须包含在搜索路径里：{@code jniavutil} 等在 ffmpeg 目录，
+     * {@code jnijavacpp} 在 javacpp 目录，缺任一个都会在类初始化时报
+     * UnsatisfiedLinkError。
+     *
+     * <p>JavaCPP 的 {@link Loader#loadProperties()} 结果会全局缓存，若在注册前已有
+     * 任何 JavaCPP 类被引用，缓存里将不含 linkpath/preloadpath；这里强制重载一次，
+     * 保证即使发生上述情况属性也能生效。
+     */
+    private static void registerLibraryPaths(Path ffDir, Path jcDir) {
+        String ff = ffDir.toAbsolutePath().toString();
+        String jc = jcDir.toAbsolutePath().toString();
+        String sep = java.io.File.pathSeparator;
+        System.setProperty("org.bytedeco.javacpp.platform.linkpath", ff + sep + jc);
+        System.setProperty("org.bytedeco.javacpp.platform.preloadpath", jc + sep + ff);
+        // forceReload=true：丢弃可能不含上面路径的旧缓存（必须在首次引用 JavaCPP 类前）
+        Loader.loadProperties(true);
+    }
+
     /** 确保 natives 已下载解压（标记文件或必需原生库缺失时联网获取）。 */
     private static void prepare(String platform, Path root, Path ffBase, Path jcBase)
             throws Exception {
@@ -168,8 +216,14 @@ public final class NativeRuntime {
         Path markerFile = root.resolve("cinemaforyou-natives-" + platform + ".txt");
         boolean have = Files.isRegularFile(markerFile)
                 && Files.readString(markerFile).trim().equals(marker)
-                && hasNativeLib(jcBase, "jnijavacpp");
-        if (have) return;
+                && nativeLibExists(jcBase, platform, "jnijavacpp")
+                && nativeLibExists(ffBase, platform, "jniavutil");
+        if (have) {
+            // 缓存命中也要注册（由 ensureNow 统一执行），这里只记录以便诊断
+            LOGGER.info("[CinemaForYou] 解码原生库缓存命中: {}（下一步注册搜索路径）",
+                    root.toAbsolutePath());
+            return;
+        }
 
         LOGGER.info("[CinemaForYou] 首次使用：下载解码组件（{}，约 30MB，仅一次）...", platform);
         // 目录不完整：清空重建
@@ -186,10 +240,18 @@ public final class NativeRuntime {
         try {
             Path ffJar = tmp.resolve("ffmpeg.jar");
             Path jcJar = tmp.resolve("javacpp.jar");
-            download(ffArtifact, ffJar);
-            download(jcArtifact, jcJar);
-            extractNatives(ffJar, root);
-            extractNatives(jcJar, root);
+            try {
+                download(ffArtifact, ffJar);
+                download(jcArtifact, jcJar);
+            } catch (Exception e) {
+                throw new IOException("下载失败: " + e.getMessage(), e);
+            }
+            try {
+                extractNatives(ffJar, root);
+                extractNatives(jcJar, root);
+            } catch (IOException e) {
+                throw new IOException("解压失败: " + e.getMessage(), e);
+            }
             Files.writeString(markerFile, marker);
             LOGGER.info("[CinemaForYou] 解码组件下载解压完成");
         } finally {
@@ -380,8 +442,16 @@ public final class NativeRuntime {
         }
     }
 
-    /** 目录下是否存在指定基名的原生库（兼容 Windows/Linux/Android 与 macOS 命名）。 */
-    private static boolean hasNativeLib(Path dir, String base) {
+    /** 按平台返回原生库文件名（Windows: name.dll；macOS: libname.dylib；Linux/Android: libname.so）。 */
+    private static String libFileName(String platform, String base) {
+        if (platform.startsWith("windows")) return base + ".dll";
+        if (platform.startsWith("macosx")) return "lib" + base + ".dylib";
+        return "lib" + base + ".so";
+    }
+
+    /** 目录下是否存在指定基名的原生库（按平台后缀优先，其余后缀兜底识别）。 */
+    private static boolean nativeLibExists(Path dir, String platform, String base) {
+        if (Files.isRegularFile(dir.resolve(libFileName(platform, base)))) return true;
         return Files.isRegularFile(dir.resolve(base + ".dll"))
                 || Files.isRegularFile(dir.resolve("lib" + base + ".so"))
                 || Files.isRegularFile(dir.resolve("lib" + base + ".dylib"));
