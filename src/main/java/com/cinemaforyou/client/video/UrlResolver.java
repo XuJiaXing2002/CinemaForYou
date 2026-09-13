@@ -32,8 +32,6 @@ import java.util.regex.Pattern;
 public final class UrlResolver {
 
     private static final Logger LOGGER = LoggerFactory.getLogger("CinemaForYou/UrlResolver");
-    private static final Path DEBUG_LOG =
-            Path.of("d:/Minecraft_Project/CinemaForYou/.dbg/trae-debug-log-video-link-stutter.ndjson");
 
     /** 直链视频扩展名（这些 URL 无需 yt-dlp 解析）。 */
     private static final Pattern DIRECT_VIDEO =
@@ -947,10 +945,18 @@ public final class UrlResolver {
         return "yt-dlp 退出码 " + exit + ": " + detail;
     }
 
+    /** 调试日志路径：{@code <游戏目录>/cinema/debug/}（目录不存在时由 debugPoint 创建）。 */
+    private static Path debugLogPath() {
+        return net.minecraft.client.Minecraft.getInstance().gameDirectory.toPath()
+                .resolve("cinema").resolve("debug")
+                .resolve("trae-debug-log-video-link-stutter.ndjson");
+    }
+
     // #region debug-point A:helper
     private static void debugPoint(String hypothesisId, String location, String msg, Object... kvPairs) {
         try {
-            Files.createDirectories(DEBUG_LOG.getParent());
+            Path log = debugLogPath();
+            Files.createDirectories(log.getParent());
             StringBuilder json = new StringBuilder();
             json.append("{\"sessionId\":\"video-link-stutter\",\"runId\":\"post-fix\",\"hypothesisId\":\"")
                     .append(escapeJson(hypothesisId)).append("\",\"location\":\"")
@@ -962,7 +968,7 @@ public final class UrlResolver {
                         .append(escapeJson(String.valueOf(kvPairs[i + 1]))).append('"');
             }
             json.append("},\"ts\":").append(System.currentTimeMillis()).append("}");
-            Files.writeString(DEBUG_LOG, json.append(System.lineSeparator()).toString(),
+            Files.writeString(log, json.append(System.lineSeparator()).toString(),
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         } catch (Exception ignored) {}
     }

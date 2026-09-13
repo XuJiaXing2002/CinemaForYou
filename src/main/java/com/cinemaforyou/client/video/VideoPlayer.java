@@ -62,8 +62,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class VideoPlayer {
 
     private static final Logger LOGGER = LoggerFactory.getLogger("CinemaForYou/VideoPlayer");
-    private static final Path DEBUG_LOG =
-            Path.of("d:/Minecraft_Project/CinemaForYou/.dbg/trae-debug-log-video-link-stutter.ndjson");
 
     /**
      * 帧槽上限/内存预算：解码可领先帧数按"分辨率+内存预算"自适应
@@ -1711,10 +1709,18 @@ public class VideoPlayer {
         return Math.min(requested, 1080);
     }
 
+    /** 调试日志路径：{@code <游戏目录>/cinema/debug/}（目录不存在时由 debugPoint 创建）。 */
+    private static Path debugLogPath() {
+        return Minecraft.getInstance().gameDirectory.toPath()
+                .resolve("cinema").resolve("debug")
+                .resolve("trae-debug-log-video-link-stutter.ndjson");
+    }
+
     // #region debug-point B:helper
     private static void debugPoint(String hypothesisId, String location, String msg, Object... kvPairs) {
         try {
-            Files.createDirectories(DEBUG_LOG.getParent());
+            Path log = debugLogPath();
+            Files.createDirectories(log.getParent());
             StringBuilder json = new StringBuilder();
             json.append("{\"sessionId\":\"video-link-stutter\",\"runId\":\"sync-rewrite\",\"hypothesisId\":\"")
                     .append(escapeJson(hypothesisId)).append("\",\"location\":\"")
@@ -1726,7 +1732,7 @@ public class VideoPlayer {
                         .append(escapeJson(String.valueOf(kvPairs[i + 1]))).append('"');
             }
             json.append("},\"ts\":").append(System.currentTimeMillis()).append("}");
-            Files.writeString(DEBUG_LOG, json.append(System.lineSeparator()).toString(),
+            Files.writeString(log, json.append(System.lineSeparator()).toString(),
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         } catch (Exception ignored) {}
     }

@@ -61,8 +61,7 @@ public final class NativeRuntime {
     private static final Set<String> SUPPORTED_PLATFORMS = Set.of(
             "windows-x86_64",
             "linux-x86_64", "linux-arm64",
-            "macosx-x86_64", "macosx-arm64",
-            "android-arm64", "android-x86_64");
+            "macosx-x86_64", "macosx-arm64");
 
     private static final Object LOCK = new Object();
     private static volatile boolean ready = false;
@@ -116,6 +115,12 @@ public final class NativeRuntime {
 
     private static void ensureNow() {
         try {
+            // 安卓端不再适配视频解码（实测画面不可用、且软解负载高容易卡顿）：
+            // 这里直接拒绝，不下载也不加载原生库，避免手机端因解码而卡死。
+            if (isAndroidRuntime()) {
+                fail("安卓端暂不支持视频解码");
+                return;
+            }
             String platform;
             Path root;
             Path ffDir;

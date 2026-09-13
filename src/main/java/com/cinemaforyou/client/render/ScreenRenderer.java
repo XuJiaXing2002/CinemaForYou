@@ -41,8 +41,6 @@ public class ScreenRenderer {
     private static final long DEBUG_INFO_INTERVAL_MS = 2000;
     /** 调试信息覆盖的最大距离平方（块²）。 */
     private static final double DEBUG_INFO_RANGE_SQ = 64.0 * 64.0;
-    private static final Path DEBUG_LOG =
-            Path.of("d:/Minecraft_Project/CinemaForYou/.dbg/trae-debug-log-video-link-stutter.ndjson");
 
     private static long lastDebugInfoMs = 0L;
     private static long lastRenderLogMs = 0L;
@@ -212,10 +210,18 @@ public class ScreenRenderer {
         return s.length() <= max ? s : s.substring(0, max) + "...";
     }
 
+    /** 调试日志路径：{@code <游戏目录>/cinema/debug/}（目录不存在时由 debugPoint 创建）。 */
+    private static Path debugLogPath() {
+        return Minecraft.getInstance().gameDirectory.toPath()
+                .resolve("cinema").resolve("debug")
+                .resolve("trae-debug-log-video-link-stutter.ndjson");
+    }
+
     // #region debug-point D:helper
     private static void debugPoint(String hypothesisId, String location, String msg, Object... kvPairs) {
         try {
-            Files.createDirectories(DEBUG_LOG.getParent());
+            Path log = debugLogPath();
+            Files.createDirectories(log.getParent());
             StringBuilder json = new StringBuilder();
             json.append("{\"sessionId\":\"video-link-stutter\",\"runId\":\"post-fix\",\"hypothesisId\":\"")
                     .append(escapeJson(hypothesisId)).append("\",\"location\":\"")
@@ -227,7 +233,7 @@ public class ScreenRenderer {
                         .append(escapeJson(String.valueOf(kvPairs[i + 1]))).append('"');
             }
             json.append("},\"ts\":").append(System.currentTimeMillis()).append("}");
-            Files.writeString(DEBUG_LOG, json.append(System.lineSeparator()).toString(),
+            Files.writeString(log, json.append(System.lineSeparator()).toString(),
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         } catch (Exception ignored) {}
     }
