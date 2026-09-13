@@ -3,6 +3,7 @@ package com.cinemaforyou.client.video;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.client.Minecraft;
+import org.bytedeco.javacpp.Loader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -15,6 +16,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.List;
+import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -44,6 +46,16 @@ public final class NativeRuntime {
             "https://repo1.maven.org/maven2",
             "https://repo.maven.apache.org/maven2"
     );
+
+    /**
+     * 支持的原生库平台（与 gradle.properties 的 native_platforms 对应）。
+     * 未知平台不尝试原生加载，走优雅降级（由上层提示"当前平台不支持视频解码"）。
+     */
+    private static final Set<String> SUPPORTED_PLATFORMS = Set.of(
+            "windows-x86_64",
+            "linux-x86_64", "linux-arm64",
+            "macosx-x86_64", "macosx-arm64",
+            "android-arm64", "android-x86_64");
 
     private static final Object LOCK = new Object();
     private static volatile boolean ready = false;
@@ -101,7 +113,7 @@ public final class NativeRuntime {
             Path jcDir;
             try {
                 String platform = detectPlatform();
-                Path root = nativesRoot();
+                Path root = nativesRoot(platform);
                 Path ffBase = root.resolve("org/bytedeco/ffmpeg/" + platform);
                 Path jcBase = root.resolve("org/bytedeco/javacpp/" + platform);
                 prepare(platform, root, ffBase, jcBase);
@@ -111,9 +123,7 @@ public final class NativeRuntime {
                 fail("解码组件准备失败: " + e.getMessage());
                 return;
             }
-            if (!Files.isRegularFile(ffDir.resolve("jniavutil.dll"))
-                    && !Files.isRegularFile(ffDir.resolve("libjniavutil.so"))
-                    && !Files.isRegularFile(ffDir.resolve("libjniavutil.dylib"))) {
+            if (!hasNativeLib(ffDir, "jniavutil")) {
                 fail("解码组件文件缺失（目录 " + ffDir + "）");
                 return;
             }
@@ -151,14 +161,14 @@ public final class NativeRuntime {
         }
     }
 
-    /** 确保 natives 已下载解压（标记文件或必需 dll 缺失时联网获取）。 */
+    /** 确保 natives 已下载解压（标记文件或必需原生库缺失时联网获取）。 */
     private static void prepare(String platform, Path root, Path ffBase, Path jcBase)
             throws Exception {
         String marker = "ok-" + FFMPEG_VERSION + "-" + JAVACPP_VERSION;
         Path markerFile = root.resolve("cinemaforyou-natives-" + platform + ".txt");
         boolean have = Files.isRegularFile(markerFile)
                 && Files.readString(markerFile).trim().equals(marker)
-                && Files.isRegularFile(jcBase.resolve("jnijavacpp.dll"));
+                && hasNativeLib(jcBase, "jnijavacpp");
         if (have) return;
 
         LOGGER.info("[CinemaForYou] 首次使用：下载解码组件（{}，约 30MB，仅一次）...", platform);
@@ -279,14 +289,61 @@ public final class NativeRuntime {
         return sb.toString();
     }
 
-    private static Path nativesRoot() {
+    private static Path nativesRoot(String platform) {
         Minecraft mc = Minecraft.getInstance();
         Path base = mc.gameDirectory.toPath().resolve("cinema").resolve("natives");
-        return base.resolve(detectPlatform());
+        return base.resolve(platform);
     }
 
-    /** 检测当前平台（JavaCPP 平台名）。 */
+    /**
+     * 检测当前平台（JavaCPP 平台名）。
+     *
+     * <p>优先级：显式属性 {@code org.bytedeco.javacpp.platform} &gt;
+     * JavaCPP 自身识别 {@link Loader#getPlatform()}（Android 上得到 android-arm64/
+     * android-x86_64）&gt; 原有 os.name/os.arch 回退映射。
+     * 未知平台抛出可捕获异常（由 ensureNow 记录失败），上层据此提示
+     * "当前平台不支持视频解码"，而不是让原生库直接崩溃。
+     */
     private static String detectPlatform() {
+        // 1) 显式覆盖优先级最高（JavaCPP 自身也读取同一属性），此时不再做 Android 纠正
+        String override = System.getProperty("org.bytedeco.javacpp.platform", "").trim();
+        String platform;
+        if (!override.isEmpty()) {
+            platform = override;
+        } else {
+            // 2) 优先用 JavaCPP 自身识别：其 Detector 依据 java.vm.name/os.name/os.arch，
+            //    安卓（dalvik）会判为 android-*，桌面判为 windows/linux/macosx-*
+            platform = null;
+            try {
+                String p = Loader.getPlatform();
+                if (p != null && !p.isBlank()) {
+                    platform = p.trim();
+                }
+            } catch (Throwable t) {
+                LOGGER.warn("[CinemaForYou] JavaCPP 平台识别失败，回退 os.name/os.arch 映射", t);
+            }
+            if (platform == null) {
+                platform = mapFromOs();
+            }
+            // Android 纠正：FCL/Pojav 等启动器实际运行 OpenJDK，java.vm.name 不以 dalvik
+            // 开头，JavaCPP 会误判成 linux-arm64；再用 Android 环境变量兜底纠正。
+            if (platform != null && platform.startsWith("linux-") && isAndroidRuntime()) {
+                platform = "android-" + platform.substring("linux-".length());
+            }
+        }
+        // 3) 校验：非桌面常见平台且非 Android 视为未知平台，走优雅降级
+        if (platform == null || !SUPPORTED_PLATFORMS.contains(platform)) {
+            throw new IllegalStateException("当前平台不支持视频解码: "
+                    + (platform != null ? platform
+                    : System.getProperty("os.name", "?") + "/" + System.getProperty("os.arch", "?")));
+        }
+        LOGGER.info("[CinemaForYou] 解码平台识别为 {} (os.name={}, os.arch={})",
+                platform, System.getProperty("os.name", "?"), System.getProperty("os.arch", "?"));
+        return platform;
+    }
+
+    /** 原有 os.name/os.arch 映射（JavaCPP 识别不可用时的回退）；未知系统返回 null。 */
+    private static String mapFromOs() {
         String os = System.getProperty("os.name", "").toLowerCase();
         String arch = System.getProperty("os.arch", "").toLowerCase();
         if (os.contains("win")) {
@@ -300,7 +357,34 @@ public final class NativeRuntime {
             return (arch.contains("aarch64") || arch.contains("arm64"))
                     ? "linux-arm64" : "linux-x86_64";
         }
-        throw new IllegalStateException("不支持的平台: " + os + " / " + arch);
+        return null;
+    }
+
+    /**
+     * Android 运行时探测。
+     *
+     * <p>JavaCPP 仅在 {@code java.vm.name} 以 dalvik 开头时才识别 Android，而
+     * FCL/PojavLauncher 等启动器运行的是 OpenJDK，会被误判为 linux-arm64。
+     * Android 系统进程普遍带有 ANDROID_ROOT/ANDROID_DATA 环境变量（桌面 Linux
+     * 不会命中），据此兜底纠正平台名。
+     */
+    private static boolean isAndroidRuntime() {
+        try {
+            String root = System.getenv("ANDROID_ROOT");
+            if (root != null && !root.isEmpty()) return true;
+            String data = System.getenv("ANDROID_DATA");
+            if (data != null && !data.isEmpty()) return true;
+            return Files.isRegularFile(Path.of("/system/build.prop"));
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 目录下是否存在指定基名的原生库（兼容 Windows/Linux/Android 与 macOS 命名）。 */
+    private static boolean hasNativeLib(Path dir, String base) {
+        return Files.isRegularFile(dir.resolve(base + ".dll"))
+                || Files.isRegularFile(dir.resolve("lib" + base + ".so"))
+                || Files.isRegularFile(dir.resolve("lib" + base + ".dylib"));
     }
 
     private static void deleteRecursively(Path dir) throws IOException {
