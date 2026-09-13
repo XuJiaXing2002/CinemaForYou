@@ -136,6 +136,8 @@ public class VideoPlayer {
     // ───────────── 冻结看门狗 / 重开解码流（连续快退卡死防护） ─────────────
     /** 解码流直链（resolve 结果），重开解码流时复用。 */
     private String videoResolvedUrl;
+    /** 本次解析出的音视频直链对（含独立音频流地址）；重开/循环重播重建音频会话用。 */
+    private volatile UrlResolver.ResolvedSource resolvedSource;
     /** 当前流是否支持精确定位（HLS 等不可 seek 的流为 false）。 */
     private volatile boolean seekCapable = true;
     /** 解码线程置位：请求重开解码流（seek 失败/长时间滚不到目标时）。 */
@@ -464,6 +466,7 @@ public class VideoPlayer {
             }
 
             videoResolvedUrl = resolved.videoUrl();
+            resolvedSource = resolved;
             // 直链防盗链：带 Referer/UA 打不开时（部分 CDN 反而拒绝带来源头），
             // 自动去掉自定义请求头重试一次
             boolean httpDirect = videoResolvedUrl != null
@@ -530,6 +533,13 @@ public class VideoPlayer {
                 }
                 lastSeekHandledAtMs = System.currentTimeMillis();
             }
+
+            // 音频会话提前启动：放在 grabber 打开成功、首帧解码之前，与"拉流+解码首帧"
+            // 并行执行。这样首帧上屏后被 tick 的音频门控判断时音频往往已就绪，门控瞬间
+            // 通过，消除"首帧已解出却还要等音频出声/超时"的起播与循环等待。
+            // 仍按 segmentStartMs 起播，保证音视频从同一媒体位置开始；无音频流时由
+            // AudioPlayer 内部 hasAudio() 判定跳过（不白开声卡）。门控逻辑本身不变。
+            startAudioIfNeeded(resolved);
 
             if (!grabber.hasVideo()) {
                 // 纯音频源（mp3/音频流等）：黑屏播放音频直到结束
@@ -1051,6 +1061,13 @@ public class VideoPlayer {
             lastSeekHandledAtMs = System.currentTimeMillis();
             if (!ok) {
                 LOGGER.warn("[CinemaForYou] 重开后定位 {}ms 失败，从头/当前位置播放", target);
+            }
+            // 循环重播/重开路径同样尽早重建音频会话，使其与首帧解码并行。
+            // startAudioIfNeeded 幂等：中途卡顿恢复时音频仍在（audioPlayer != null）会跳过，
+            // 不改动既有音频跟随/seek 语义；仅 restart() 已清空音频时才真正重建。
+            UrlResolver.ResolvedSource rs = resolvedSource;
+            if (rs != null) {
+                startAudioIfNeeded(rs);
             }
             resetSlots();
             firstPtsUs = -1L;

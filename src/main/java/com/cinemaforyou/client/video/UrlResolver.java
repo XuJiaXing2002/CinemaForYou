@@ -11,7 +11,9 @@ import java.io.File;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
@@ -69,6 +71,48 @@ public final class UrlResolver {
     private static void fail(String reason) {
         lastError = reason;
         LOGGER.error("[CinemaForYou] URL 解析失败: {}", reason);
+    }
+
+    // ───────────── 解析结果内存缓存 ─────────────
+    /** 缓存容量上限（LRU 淘汰最久未用的条目）。同一链接来回切换时命中，
+     *  省掉 2~3 秒的 yt-dlp 解析等待。 */
+    private static final int RESOLVE_CACHE_MAX = 32;
+    /** 缓存有效期：直链/分离流地址常带签名时效，过期必须重新解析。 */
+    private static final long RESOLVE_CACHE_TTL_MS = 30 * 60 * 1000L;
+
+    /** 一条解析缓存：直链对 + 写入时刻（TTL 判定用）。 */
+    private record CacheEntry(ResolvedSource source, long resolvedAtMs) {}
+
+    /** accessOrder=true 实现 LRU：容量超限时 removeEldestEntry 淘汰最久未访问项。
+     *  进程内内存缓存，不落盘；仅在成功解析网页类源后写入。 */
+    private static final Map<String, CacheEntry> RESOLVE_CACHE =
+            new LinkedHashMap<>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, CacheEntry> eldest) {
+                    return size() > RESOLVE_CACHE_MAX;
+                }
+            };
+
+    /** 查询解析缓存：未命中或已过期返回 null（过期项顺手清除以便重新解析）。 */
+    private static ResolvedSource lookupResolveCache(String key) {
+        if (key == null) return null;
+        synchronized (RESOLVE_CACHE) {
+            CacheEntry e = RESOLVE_CACHE.get(key);
+            if (e == null) return null;
+            if (System.currentTimeMillis() - e.resolvedAtMs() > RESOLVE_CACHE_TTL_MS) {
+                RESOLVE_CACHE.remove(key);
+                return null;
+            }
+            return e.source();
+        }
+    }
+
+    /** 写入解析缓存（仅成功结果；解析失败绝不入缓存，避免把临时失败固化）。 */
+    private static void storeResolveCache(String key, ResolvedSource source) {
+        if (key == null || source == null) return;
+        synchronized (RESOLVE_CACHE) {
+            RESOLVE_CACHE.put(key, new CacheEntry(source, System.currentTimeMillis()));
+        }
     }
 
     /**
@@ -131,9 +175,19 @@ public final class UrlResolver {
             return new ResolvedSource(s, s);
         }
 
+        // 网页类源（YouTube/B站/Twitch 等）：先查解析缓存。同一链接来回切换时
+        // 直接复用上次 yt-dlp/页面探测的结果，跳过 2~3 秒的解析等待。
+        // 直链/本地文件在上面已原样返回，不经过缓存，行为不变。
+        ResolvedSource cached = lookupResolveCache(s);
+        if (cached != null) {
+            LOGGER.info("[CinemaForYou] 命中解析缓存，跳过 yt-dlp 重新解析: {}", trimForLog(s));
+            return cached;
+        }
+
         // 其它（YouTube/B站/Twitch 等）：用 yt-dlp 解析
         ResolvedSource resolved = resolveWithYtDlp(s);
         if (resolved != null) {
+            storeResolveCache(s, resolved);
             return resolved;
         }
         // yt-dlp 不支持的站（苹果CMS 等小站）：直接抓页面找 m3u8/mp4 直链兜底。
@@ -142,6 +196,7 @@ public final class UrlResolver {
         ResolvedSource probed = probePageForDirect(s);
         if (probed != null) {
             lastError = null;
+            storeResolveCache(s, probed);
             LOGGER.info("[CinemaForYou] 页面直链探测成功: {} → {}",
                     trimForLog(s), trimForLog(probed.videoUrl()));
             return probed;
