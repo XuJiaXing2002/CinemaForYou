@@ -195,6 +195,11 @@ public class VideoPlayer {
     private int seekFixTries = 0;
     /** 最近一次成功上传显示帧的时刻（渲染线程写，冻结看门狗用）。 */
     private volatile long lastUploadAtMs = 0L;
+    /** 本片段首帧是否尚未上屏：start/restart/applySeek/reopenGrabber 置位，
+     *  渲染线程首帧上传成功后清零。为真时主时钟冻结在 segmentStartMs，
+     *  使"解析链接→打开 grabber→解码首帧"的启动耗时不计入播放位置，
+     *  避免首帧上屏前时钟已前进数秒、画面被连续快放追赶。 */
+    private volatile boolean awaitingFirstUpload = true;
 
     // decode 线程私有状态（无需 volatile）
     private long firstPtsUs = -1L;       // 片段首帧 PTS（µs），仅作音频启动/日志标记
@@ -280,6 +285,7 @@ public class VideoPlayer {
         wallBasePosMs = Math.max(0L, startPosMs);
         wallBaseWallMs = System.currentTimeMillis();
         segmentStartMs = wallBasePosMs;
+        awaitingFirstUpload = true;   // 首帧上屏前冻结主时钟，启动耗时不进入播放位置
         timelineT0Ms = wallBaseWallMs;
         timelineFirstDecodeMs = 0L;
         timelineLogged = false;
@@ -400,6 +406,7 @@ public class VideoPlayer {
         wallBaseWallMs = System.currentTimeMillis();
         segmentStartMs = 0L;
         masterPosMs = 0L;
+        awaitingFirstUpload = true;   // 首帧上屏前冻结主时钟，重开耗时不进入播放位置
         // 重置帧上传跟踪与看门狗
         lastUploadAtMs = 0L;
         resyncArmed = false;
@@ -820,6 +827,7 @@ public class VideoPlayer {
             lastSeekHandledAtMs = System.currentTimeMillis();
             segmentStartMs = durationMs;
             masterPosMs = durationMs;
+            awaitingFirstUpload = true;   // 已到片尾，主时钟冻结在片尾等待既有 EOF 链路收尾
             wallFallback = true;
             wallBasePosMs = durationMs;
             wallBaseWallMs = System.currentTimeMillis();
@@ -849,6 +857,7 @@ public class VideoPlayer {
         wallBasePosMs = segmentStartMs;
         wallBaseWallMs = System.currentTimeMillis();
         masterPosMs = segmentStartMs;
+        awaitingFirstUpload = true;   // 首帧上屏前冻结主时钟，定位/解码耗时不进入播放位置
         resyncArmed = false;
     }
 
@@ -1046,6 +1055,7 @@ public class VideoPlayer {
             resetSlots();
             firstPtsUs = -1L;
             lastPtsUs = -1L;
+            awaitingFirstUpload = true;   // 首帧上屏前冻结主时钟，重开耗时不进入播放位置
             lastFrameAtMs = System.currentTimeMillis();
             LOGGER.info("[CinemaForYou] 屏幕 {} 解码流已重开 @ {}ms (ok={})", screenId, target, ok);
         } catch (Exception e) {
@@ -1064,6 +1074,15 @@ public class VideoPlayer {
      */
     private void updateMasterClock(boolean frozen) {
         long nowWall = System.currentTimeMillis();
+        if (awaitingFirstUpload) {
+            // 本片段首帧尚未上屏：主时钟钉在片段起点，不前进也不累积——否则"解析链接→
+            // 打开 grabber→解码首帧"的启动耗时会被计入播放位置，首帧一到就落后时钟、
+            // 被连续快放追赶，表现为开头 2~3 秒被"快放"跳过。
+            // 这里刻意不刷新墙钟基准：保留它才能让"启动后仍无帧"的看门狗按原节奏触发重开。
+            wallFallback = true;
+            masterPosMs = segmentStartMs;
+            return;
+        }
         AudioPlayer a = audioPlayer;
         if (a != null && a.hasLiveAudio()) {
             // 音频时钟为主：顺带持续刷新墙钟回退基准，音频结束后无缝切换
@@ -1548,6 +1567,13 @@ public class VideoPlayer {
             }
             texture.uploadAll();
             lastUploadAtMs = System.currentTimeMillis();
+            // 首帧（或重开片段后的首帧）已上屏：墙钟基准锚到此刻、从片段起点开始计时
+            //（冻结期间不计时，这里必须重锚，否则启动等待时长会被一次性计入 → 位置跳变）
+            wallFallback = true;
+            wallBasePosMs = segmentStartMs;
+            wallBaseWallMs = lastUploadAtMs;
+            // 解除主时钟冻结，此后按时钟正常推进
+            awaitingFirstUpload = false;
             // 时间线汇总：起播/循环重启 → 首帧解码 → 画面上屏，把"延迟几秒"归因到具体阶段
             if (!timelineLogged && timelineT0Ms > 0L && timelineFirstDecodeMs > 0L) {
                 timelineLogged = true;
