@@ -314,7 +314,9 @@ public class AudioPlayer {
                 if (t > maxDist) break;
             }
             var state = level.getBlockState(new net.minecraft.core.BlockPos(x, y, z));
-            if (!state.isAir() && state.isSolid()) {
+            // 只有"不透明完整方块"才隔音：玻璃（不遮挡）、栅栏、树叶、半砖、楼梯等
+            // 非完整/非遮挡方块一律不隔音（canOcclude 为 false）
+            if (state.canOcclude()) {
                 return true;
             }
         }
