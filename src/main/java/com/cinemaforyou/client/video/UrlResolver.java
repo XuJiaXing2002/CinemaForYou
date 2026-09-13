@@ -1,5 +1,6 @@
 package com.cinemaforyou.client.video;
 
+import com.cinemaforyou.client.util.DebugLog;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import org.slf4j.Logger;
@@ -9,9 +10,6 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
@@ -945,39 +943,9 @@ public final class UrlResolver {
         return "yt-dlp 退出码 " + exit + ": " + detail;
     }
 
-    /** 调试日志路径：{@code <游戏目录>/cinema/debug/}（目录不存在时由 debugPoint 创建）。 */
-    private static Path debugLogPath() {
-        return net.minecraft.client.Minecraft.getInstance().gameDirectory.toPath()
-                .resolve("cinema").resolve("debug")
-                .resolve("trae-debug-log-video-link-stutter.ndjson");
-    }
-
     // #region debug-point A:helper
     private static void debugPoint(String hypothesisId, String location, String msg, Object... kvPairs) {
-        try {
-            Path log = debugLogPath();
-            Files.createDirectories(log.getParent());
-            StringBuilder json = new StringBuilder();
-            json.append("{\"sessionId\":\"video-link-stutter\",\"runId\":\"post-fix\",\"hypothesisId\":\"")
-                    .append(escapeJson(hypothesisId)).append("\",\"location\":\"")
-                    .append(escapeJson(location)).append("\",\"msg\":\"")
-                    .append(escapeJson(msg)).append("\",\"data\":{");
-            for (int i = 0; i + 1 < kvPairs.length; i += 2) {
-                if (i > 0) json.append(',');
-                json.append('"').append(escapeJson(String.valueOf(kvPairs[i]))).append("\":\"")
-                        .append(escapeJson(String.valueOf(kvPairs[i + 1]))).append('"');
-            }
-            json.append("},\"ts\":").append(System.currentTimeMillis()).append("}");
-            Files.writeString(log, json.append(System.lineSeparator()).toString(),
-                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-        } catch (Exception ignored) {}
-    }
-
-    private static String escapeJson(String value) {
-        return value == null ? "" : value.replace("\\", "\\\\")
-                .replace("\"", "\\\"")
-                .replace("\r", "\\r")
-                .replace("\n", "\\n");
+        DebugLog.debugPoint("post-fix", hypothesisId, location, msg, kvPairs);
     }
 
     private static String trimForLog(String value) {

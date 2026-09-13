@@ -69,7 +69,7 @@ public final class ScreenQuad {
      * <p>原因：ENTITY_TRANSLUCENT 定义了 PER_FACE_LIGHTING，entity.vsh 会按法线与
      * 两个方向光做点积，再按 gl_FrontFacing 取正面/背面两套颜色。我们提交的 quad
      * 法线恒为 (0,1,0) 且只画单面，点积累加值最低落到 ambient 0.4——不开光影时
-     * 画面被压暗到 40%~70%（用户反馈"透明内容很暗"）；光影包完全替换 shader
+     * 画面被压暗到 40%~70%；光影包完全替换 shader
      * 不受此宏影响，所以开光影反而正常。NO_CARDINAL_LIGHTING 让 vertexColor
      * 直接等于顶点色（满亮），lightmap(uv2=240) 仍参与，画面与不透明管线一致。
      */

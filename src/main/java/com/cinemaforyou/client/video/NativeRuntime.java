@@ -27,7 +27,7 @@ import java.util.zip.ZipFile;
 /**
  * FFmpeg 解码原生库运行时保障（瘦身方案核心）。
  *
- * <p>自 1.0.6 起 jar 不再内置各平台 FFmpeg natives（原 121MB，现约 2MB）；
+ * <p>jar 不内置各平台 FFmpeg natives（构建产物约 2MB）；
  * 首次需要解码时，从 Maven 镜像（阿里云 → repo1 回退）下载并解压与
  * JavaCV 严格匹配的 natives（本机平台一份，约 30MB，只下一次），随后通过
  * JavaCPP 官方支持的系统属性（{@code org.bytedeco.javacpp.platform.linkpath /
@@ -194,8 +194,8 @@ public final class NativeRuntime {
                     System.getProperty("org.bytedeco.javacpp.platform.linkpath"),
                     System.getProperty("org.bytedeco.javacpp.platform.preloadpath"));
             // ffmpeg 日志级别：必须在注册成功之后才可引用 avutil（其类初始化会加载
-            // jniavutil）。原实现放在 VideoPlayer 构造函数里，会在注册前触发类初始化
-            // 导致 UnsatisfiedLinkError 且该类永久不可用，现统一移到此处。
+            // jniavutil）；在注册前触发类初始化会导致 UnsatisfiedLinkError，且该类
+            // 永久不可用。
             try {
                 org.bytedeco.ffmpeg.global.avutil.av_log_set_level(
                         org.bytedeco.ffmpeg.global.avutil.AV_LOG_ERROR);

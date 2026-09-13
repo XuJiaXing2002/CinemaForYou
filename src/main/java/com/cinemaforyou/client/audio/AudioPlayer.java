@@ -77,6 +77,9 @@ public class AudioPlayer {
     private Thread decodeThread;
     private FFmpegFrameGrabber grabber;
     private SourceDataLine line;
+    // 主增益写回缓存：line 未变且增益相同时跳过控制查询/写回（tickSpatial 每帧调用）
+    private SourceDataLine gainAppliedLine;
+    private float gainAppliedValue = Float.NaN;
 
     // 以下仅在解码线程内访问
     private long segmentStartMs;      // 当前片段起始媒体位置
@@ -386,7 +389,7 @@ public class AudioPlayer {
             // 代价是开播约多等 5 秒（类似浏览器先缓冲再播）
             int outputBufferSize = Math.max(16384, sampleRate * format.getFrameSize() * 5);
             // 切换视频时上一路的声卡可能还没释放：打开失败就重试几秒，否则新一路会
-            // 整段无声（用户反馈：透明/不透明来回切后，重播不透明视频第一遍没声音）
+            // 整段无声（上一路未释放时，新开流可能首遍拿不到声卡）
             SourceDataLine opened = null;
             for (int attempt = 1; attempt <= 12 && running.get(); attempt++) {
                 SourceDataLine l = null;
@@ -473,15 +476,15 @@ public class AudioPlayer {
                 if (frame == null) {
                     // 空帧不等同于 EOF：WebM/Opus 这类交错容器里音频包之间有间隔，
                     // grabSamples 会间歇返回 null。只有"没有音频流 / 已播到接近时长 /
-                    // 连续 400 次都空"才判定结束——原来一次空就结束，导致 15s 的透明
-                    // WebM 音频在 0.5s 处假结束，主时钟停住、画面变成几秒一帧。
+                    // 连续 100 次都空"才判定结束；一次空就结束会在音频包间隔处假结束，
+                    // 使主时钟停住、画面变成几秒一帧。
                     consecutiveNulls++;
                     if (durationMs <= 0) {
                         durationMs = Math.max(0L, grabber.getLengthInTime() / 1000L);
                     }
                     boolean noAudioStream = !grabber.hasAudio();
                     // 位置比时长小一截也算到结尾：positionMs 是"声卡已播出"位置，
-                    // 末尾约一个声卡缓冲（本次日志 1058ms）还没播出来，不能等它追平
+                    // 末尾约一个声卡缓冲还没播出来，不能等它追平
                     boolean reachedEnd = durationMs > 0 && positionMs >= durationMs - 2500L;
                     if (!noAudioStream && !reachedEnd && consecutiveNulls < 100) {
                         Thread.sleep(5);
@@ -710,11 +713,16 @@ public class AudioPlayer {
     private void applyMasterGain(float gain) {
         SourceDataLine l = line;
         if (l == null || !l.isControlSupported(FloatControl.Type.MASTER_GAIN)) return;
+        // 同一声卡线上重复写入同一增益是幂等的：命中缓存直接返回，
+        // 省掉每帧的 isControlSupported/getControl/setValue（含原生调用）
+        if (l == gainAppliedLine && gain == gainAppliedValue) return;
         FloatControl ctrl = (FloatControl) l.getControl(FloatControl.Type.MASTER_GAIN);
         float clamped = Math.max(0.0001f, Math.min(1.0f, gain));
         float db = (float) (20.0 * Math.log10(clamped));
         db = Math.max(ctrl.getMinimum(), Math.min(ctrl.getMaximum(), db));
         ctrl.setValue(db);
+        gainAppliedLine = l;
+        gainAppliedValue = gain;
     }
 
     private void closeLine() {

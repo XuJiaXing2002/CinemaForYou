@@ -453,11 +453,6 @@ public class ClientScreenManager {
         return st != null && st.fromRequest;
     }
 
-    private void pausePlayer(UUID id) {
-        VideoPlayer vp = players.get(id);
-        if (vp != null) vp.pause();
-    }
-
     private void stopAndRemovePlayer(UUID id) {
         retirePlayer(id);
     }

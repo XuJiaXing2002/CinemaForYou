@@ -1,7 +1,5 @@
 package com.cinemaforyou.client.network;
 
-import com.cinemaforyou.network.MediaListPayload;
-import com.cinemaforyou.network.RequestMediaListPayload;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.client.Minecraft;

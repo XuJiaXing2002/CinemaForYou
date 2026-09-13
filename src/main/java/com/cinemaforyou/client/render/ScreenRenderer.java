@@ -3,6 +3,7 @@ package com.cinemaforyou.client.render;
 import com.cinemaforyou.CinemaForYouClient;
 import com.cinemaforyou.client.ClientScreenManager;
 import com.cinemaforyou.client.config.ClientConfig;
+import com.cinemaforyou.client.util.DebugLog;
 import com.cinemaforyou.client.video.VideoPlayer;
 import com.cinemaforyou.data.CinemaScreen;
 import com.cinemaforyou.data.ScreenState;
@@ -16,9 +17,6 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.Map;
 import java.util.UUID;
 
@@ -89,6 +87,9 @@ public class ScreenRenderer {
         if (pushDebug) lastDebugInfoMs = now;
 
         LocalPlayer player = mc.player;
+        // 相机坐标在单帧内不变：循环外取一次并复用数组，避免每屏每帧重复分配
+        var camPos = context.levelState().cameraRenderState.pos;
+        double[] camPosArr = new double[]{camPos.x, camPos.y, camPos.z};
 
         for (Map.Entry<UUID, CinemaScreen> entry : mgr.allScreens().entrySet()) {
             UUID id = entry.getKey();
@@ -104,13 +105,12 @@ public class ScreenRenderer {
             boolean alphaContent = vp != null && vp.isTranslucentContent();
 
             // 渲染：黑底 + 视频纹理（相机坐标用于视频外扩防 Z-fighting）
-            var camPos = context.levelState().cameraRenderState.pos;
             ScreenQuad.render(
                     context.submitNodeCollector(),
                     context.poseStack(),
                     screen,
                     textureId,
-                    new double[]{camPos.x, camPos.y, camPos.z},
+                    camPosArr,
                     alphaContent);
             if (textureId == null) {
                 long nowLog = System.currentTimeMillis();
@@ -210,39 +210,9 @@ public class ScreenRenderer {
         return s.length() <= max ? s : s.substring(0, max) + "...";
     }
 
-    /** 调试日志路径：{@code <游戏目录>/cinema/debug/}（目录不存在时由 debugPoint 创建）。 */
-    private static Path debugLogPath() {
-        return Minecraft.getInstance().gameDirectory.toPath()
-                .resolve("cinema").resolve("debug")
-                .resolve("trae-debug-log-video-link-stutter.ndjson");
-    }
-
     // #region debug-point D:helper
     private static void debugPoint(String hypothesisId, String location, String msg, Object... kvPairs) {
-        try {
-            Path log = debugLogPath();
-            Files.createDirectories(log.getParent());
-            StringBuilder json = new StringBuilder();
-            json.append("{\"sessionId\":\"video-link-stutter\",\"runId\":\"post-fix\",\"hypothesisId\":\"")
-                    .append(escapeJson(hypothesisId)).append("\",\"location\":\"")
-                    .append(escapeJson(location)).append("\",\"msg\":\"")
-                    .append(escapeJson(msg)).append("\",\"data\":{");
-            for (int i = 0; i + 1 < kvPairs.length; i += 2) {
-                if (i > 0) json.append(',');
-                json.append('"').append(escapeJson(String.valueOf(kvPairs[i]))).append("\":\"")
-                        .append(escapeJson(String.valueOf(kvPairs[i + 1]))).append('"');
-            }
-            json.append("},\"ts\":").append(System.currentTimeMillis()).append("}");
-            Files.writeString(log, json.append(System.lineSeparator()).toString(),
-                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-        } catch (Exception ignored) {}
-    }
-
-    private static String escapeJson(String value) {
-        return value == null ? "" : value.replace("\\", "\\\\")
-                .replace("\"", "\\\"")
-                .replace("\r", "\\r")
-                .replace("\n", "\\n");
+        DebugLog.debugPoint("post-fix", hypothesisId, location, msg, kvPairs);
     }
     // #endregion
 }

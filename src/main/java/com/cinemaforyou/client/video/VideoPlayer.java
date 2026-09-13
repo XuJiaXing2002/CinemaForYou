@@ -4,6 +4,7 @@ import com.cinemaforyou.client.audio.AudioPlayer;
 import com.cinemaforyou.client.network.ClientNetworkHandlers;
 import com.cinemaforyou.client.network.QueueClient;
 import com.cinemaforyou.client.render.VideoFrameTexture;
+import com.cinemaforyou.client.util.DebugLog;
 import com.cinemaforyou.data.CinemaScreen;
 import com.cinemaforyou.network.QueueEntry;
 import com.cinemaforyou.network.ScreenActionPayload;
@@ -27,9 +28,6 @@ import java.awt.image.BufferedImage;
 import java.nio.Buffer;
 import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -885,7 +883,7 @@ public class VideoPlayer {
         g.setOption("rtsp_transport", "tcp");
         // 强制 RGBA：保留 alpha 通道（透明视频素材用）。选 RGBA 而非 BGRA 是为了让
         // 内存字节序与 Minecraft 纹理要求的完全一致，解码线程可以整块 int 拷贝，
-        // 省掉原先逐像素的 Java 通道交换（1080p 每帧约 5ms，占解码线程三成开销）。
+        // 避免逐像素的 Java 通道交换（1080p 每帧约 5ms，占解码线程三成开销）。
         g.setPixelFormat(avutil.AV_PIX_FMT_RGBA);
         int decodeHeight = effectiveDecodeHeight(screen);
         if (decodeHeight > 0) {
@@ -1709,39 +1707,9 @@ public class VideoPlayer {
         return Math.min(requested, 1080);
     }
 
-    /** 调试日志路径：{@code <游戏目录>/cinema/debug/}（目录不存在时由 debugPoint 创建）。 */
-    private static Path debugLogPath() {
-        return Minecraft.getInstance().gameDirectory.toPath()
-                .resolve("cinema").resolve("debug")
-                .resolve("trae-debug-log-video-link-stutter.ndjson");
-    }
-
     // #region debug-point B:helper
     private static void debugPoint(String hypothesisId, String location, String msg, Object... kvPairs) {
-        try {
-            Path log = debugLogPath();
-            Files.createDirectories(log.getParent());
-            StringBuilder json = new StringBuilder();
-            json.append("{\"sessionId\":\"video-link-stutter\",\"runId\":\"sync-rewrite\",\"hypothesisId\":\"")
-                    .append(escapeJson(hypothesisId)).append("\",\"location\":\"")
-                    .append(escapeJson(location)).append("\",\"msg\":\"")
-                    .append(escapeJson(msg)).append("\",\"data\":{");
-            for (int i = 0; i + 1 < kvPairs.length; i += 2) {
-                if (i > 0) json.append(',');
-                json.append('"').append(escapeJson(String.valueOf(kvPairs[i]))).append("\":\"")
-                        .append(escapeJson(String.valueOf(kvPairs[i + 1]))).append('"');
-            }
-            json.append("},\"ts\":").append(System.currentTimeMillis()).append("}");
-            Files.writeString(log, json.append(System.lineSeparator()).toString(),
-                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-        } catch (Exception ignored) {}
-    }
-
-    private static String escapeJson(String value) {
-        return value == null ? "" : value.replace("\\", "\\\\")
-                .replace("\"", "\\\"")
-                .replace("\r", "\\r")
-                .replace("\n", "\\n");
+        DebugLog.debugPoint("sync-rewrite", hypothesisId, location, msg, kvPairs);
     }
 
     private static String trimForLog(String value) {

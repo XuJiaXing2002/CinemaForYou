@@ -1,7 +1,6 @@
 package com.cinemaforyou.client.network;
 
 import com.cinemaforyou.CinemaForYouClient;
-import com.cinemaforyou.client.ClientScreenManager;
 import com.cinemaforyou.network.CreateScreenPayload;
 import com.cinemaforyou.network.MediaListPayload;
 import com.cinemaforyou.network.RequestMediaListPayload;
