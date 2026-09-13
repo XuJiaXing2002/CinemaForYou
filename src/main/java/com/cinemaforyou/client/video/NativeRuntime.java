@@ -12,13 +12,17 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.Enumeration;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
+import java.util.zip.ZipFile;
 
 /**
  * FFmpeg 解码原生库运行时保障（瘦身方案核心）。
@@ -28,6 +32,9 @@ import java.util.zip.ZipInputStream;
  * JavaCV 严格匹配的 natives（本机平台一份，约 30MB，只下一次），随后通过
  * JavaCPP 官方支持的系统属性（{@code org.bytedeco.javacpp.platform.linkpath /
  * preloadpath}）注册为库搜索目录。
+ *
+ * <p>安卓上原生库根目录必须位于应用内部可执行目录（详见 {@link #nativesRoot}），
+ * 否则 noexec 外部存储会导致 dlopen 失败。
  *
  * <p>版本常量必须与 build.gradle 中的 javacv/ffmpeg 依赖版本一致，否则
  * natives 与 JNI 绑定不匹配会崩溃。
@@ -118,6 +125,9 @@ public final class NativeRuntime {
                 root = nativesRoot(platform);
                 ffDir = root.resolve("org/bytedeco/ffmpeg/" + platform);
                 jcDir = root.resolve("org/bytedeco/javacpp/" + platform);
+                // 诊断：明确实际使用的原生库根目录（安卓应位于可执行内部目录）
+                LOGGER.info("[CinemaForYou] 原生库根目录: {} (platform={})",
+                        root.toAbsolutePath(), platform);
             } catch (Exception e) {
                 fail("解码组件准备失败: " + e.getMessage());
                 return;
@@ -132,8 +142,30 @@ public final class NativeRuntime {
             boolean ffOk = nativeLibExists(ffDir, platform, "jniavutil");
             boolean jcOk = nativeLibExists(jcDir, platform, "jnijavacpp");
             if (!ffOk || !jcOk) {
+                // 失败自愈：之前失败可能留下半成品平台目录并被后续当成缓存，
+                // 先删除该平台目录再重试一次（重新下载解压）。
+                LOGGER.warn("[CinemaForYou] 完整性校验未通过（jniavutil={}, jnijavacpp={}），"
+                        + "删除 {} 后重试一次", ffOk, jcOk, root.toAbsolutePath());
+                try {
+                    deleteRecursively(root);
+                } catch (IOException e) {
+                    LOGGER.warn("[CinemaForYou] 删除半成品目录失败: {}", e.toString());
+                }
+                try {
+                    prepare(platform, root, ffDir, jcDir);
+                } catch (Exception e) {
+                    fail("解码组件准备失败（平台 " + platform + "，重试后）: " + e.getMessage());
+                    return;
+                }
+                ffOk = nativeLibExists(ffDir, platform, "jniavutil");
+                jcOk = nativeLibExists(jcDir, platform, "jnijavacpp");
+            }
+            // 诊断：最终关键库是否存在（解压清单已由 extractNatives 打印）
+            LOGGER.info("[CinemaForYou] 原生库完整性: root={}, jniavutil={}, jnijavacpp={}",
+                    root.toAbsolutePath(), ffOk, jcOk);
+            if (!ffOk || !jcOk) {
                 fail("解码组件文件缺失（平台 " + platform + "，jniavutil=" + ffOk
-                        + "，jnijavacpp=" + jcOk + "，目录 " + root.toAbsolutePath() + "）");
+                        + "，jnijavacpp=" + jcOk + "，根目录 " + root.toAbsolutePath() + "）");
                 return;
             }
             // 注册：无论缓存命中（目录已存在）还是本次下载，只要决定用该目录就必须注册，
@@ -230,6 +262,7 @@ public final class NativeRuntime {
         if (Files.exists(root)) {
             deleteRecursively(root);
         }
+        Files.createDirectories(ffBase);
         Files.createDirectories(jcBase);
 
         String ffArtifact = "org/bytedeco/ffmpeg/" + FFMPEG_VERSION
@@ -247,58 +280,116 @@ public final class NativeRuntime {
                 throw new IOException("下载失败: " + e.getMessage(), e);
             }
             try {
-                extractNatives(ffJar, root);
-                extractNatives(jcJar, root);
+                // 不假设 jar 内目录结构：按 basename 匹配必需库，并解出同目录其它原生库
+                extractNatives(ffJar, ffBase, platform, "jniavutil");
+                extractNatives(jcJar, jcBase, platform, "jnijavacpp");
             } catch (IOException e) {
                 throw new IOException("解压失败: " + e.getMessage(), e);
             }
             Files.writeString(markerFile, marker);
-            LOGGER.info("[CinemaForYou] 解码组件下载解压完成");
+            LOGGER.info("[CinemaForYou] 解码组件下载解压完成: {}", root.toAbsolutePath());
         } finally {
             deleteRecursively(tmp);
         }
     }
 
-    /** 依次尝试各镜像下载并做 SHA-1 校验（失败抛异常由上层报告）。 */
+    /**
+     * 依次尝试各镜像下载。
+     *
+     * <p>每个镜像都记录 HTTP 状态码与下载字节数；非 200 或 0 字节视为失败并换下一
+     * 个镜像。下载完成后校验文件头为 zip/jar（前两字节 PK），否则视为镜像错误页。
+     * 全部镜像失败时，异常信息带上最后一次的 HTTP 码与 URL。
+     */
     private static void download(String artifact, Path target) throws Exception {
+        int lastCode = -1;
+        String lastUrl = null;
         Exception lastErr = null;
         for (String mirror : MIRRORS) {
             String url = mirror + "/" + artifact;
+            lastUrl = url;
+            HttpURLConnection c = null;
+            int code = -1;
+            long bytes = 0;
             try {
-                Path shaTmp = target.resolveSibling(target.getFileName() + ".sha1");
-                byte[] expect = readUrlBytes(url + ".sha1", 15_000);
-                String expectHex = new String(expect, java.nio.charset.StandardCharsets.UTF_8)
-                        .trim().split("\\s+")[0].toLowerCase();
-                downloadTo(url, target);
-                String actualHex = sha1(target);
-                if (!expectHex.equals(actualHex)) {
-                    throw new IOException("SHA-1 校验失败（期望 " + expectHex + "，实际 " + actualHex + "）");
+                c = (HttpURLConnection) new URL(url).openConnection();
+                c.setConnectTimeout(10_000);
+                c.setReadTimeout(90_000);
+                c.setInstanceFollowRedirects(true);
+                c.setRequestProperty("User-Agent", "Mozilla/5.0 CinemaForYou/1.0.7");
+                code = c.getResponseCode();
+                if (code != 200) {
+                    throw new IOException("HTTP " + code);
                 }
+                try (InputStream in = c.getInputStream();
+                     OutputStream out = Files.newOutputStream(target)) {
+                    byte[] buf = new byte[65536];
+                    int n;
+                    while ((n = in.read(buf)) > 0) {
+                        out.write(buf, 0, n);
+                        bytes += n;
+                    }
+                }
+                lastCode = code;
+                if (bytes <= 0) {
+                    throw new IOException("下载字节数为 0");
+                }
+                // 校验下载到的确实是 zip/jar（前两字节 PK），排除镜像返回的 HTML 错误页
+                if (!hasZipMagic(target)) {
+                    throw new IOException("文件头不是 zip/jar（PK）");
+                }
+                // SHA-1 为增强校验：.sha1 可取到时强制比对，取不到时放行（不阻断下载）
+                verifySha1IfAvailable(url, target);
+                LOGGER.info("[CinemaForYou] 镜像下载成功: HTTP {}, {} 字节, URL {}",
+                        code, bytes, url);
                 return;
             } catch (Exception e) {
                 lastErr = e;
-                LOGGER.warn("[CinemaForYou] 镜像下载失败 {}: {}", url, e.toString());
+                if (code > 0) {
+                    lastCode = code;
+                }
+                LOGGER.warn("[CinemaForYou] 镜像下载失败: HTTP {}, {} 字节, URL {}, 原因 {}",
+                        code, bytes, url, e.toString());
+            } finally {
+                if (c != null) {
+                    c.disconnect();
+                }
             }
         }
-        throw new IOException("全部镜像下载失败: " + lastErr);
+        throw new IOException("全部镜像下载失败（最后 HTTP " + lastCode + "，URL " + lastUrl
+                + "，原因 " + lastErr + "）");
     }
 
-    private static void downloadTo(String url, Path target) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-        c.setConnectTimeout(10_000);
-        c.setReadTimeout(90_000);
-        c.setRequestProperty("User-Agent",
-                "Mozilla/5.0 CinemaForYou/1.0.6");
-        int code = c.getResponseCode();
-        if (code != 200) {
-            c.disconnect();
-            throw new IOException("HTTP " + code);
+    /** 文件头是否为 zip/jar 的 PK 魔数。 */
+    private static boolean hasZipMagic(Path file) {
+        try (InputStream in = Files.newInputStream(file)) {
+            int b0 = in.read();
+            int b1 = in.read();
+            return b0 == 'P' && b1 == 'K';
+        } catch (IOException e) {
+            return false;
         }
-        try (InputStream in = c.getInputStream();
-             OutputStream out = Files.newOutputStream(target)) {
-            in.transferTo(out);
-        } finally {
-            c.disconnect();
+    }
+
+    /** 尽力做 SHA-1 校验：.sha1 不可用时跳过（不因辅助校验阻断可用下载）。 */
+    private static void verifySha1IfAvailable(String url, Path target) throws IOException {
+        String expectHex;
+        try {
+            byte[] expect = readUrlBytes(url + ".sha1", 15_000);
+            expectHex = new String(expect, StandardCharsets.UTF_8)
+                    .trim().split("\\s+")[0].toLowerCase(Locale.ROOT);
+        } catch (Exception e) {
+            LOGGER.info("[CinemaForYou] 跳过 SHA-1 校验（.sha1 不可用）: {}", e.toString());
+            return;
+        }
+        try {
+            String actualHex = sha1(target);
+            if (!expectHex.equals(actualHex)) {
+                throw new IOException("SHA-1 校验失败（期望 " + expectHex + "，实际 " + actualHex + "）");
+            }
+        } catch (IOException e) {
+            throw e;
+        } catch (Exception e) {
+            LOGGER.warn("[CinemaForYou] SHA-1 计算失败，跳过校验: {}", e.toString());
         }
     }
 
@@ -306,7 +397,7 @@ public final class NativeRuntime {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setConnectTimeout(10_000);
         c.setReadTimeout(timeoutMs);
-        c.setRequestProperty("User-Agent", "Mozilla/5.0 CinemaForYou/1.0.6");
+        c.setRequestProperty("User-Agent", "Mozilla/5.0 CinemaForYou/1.0.7");
         int code = c.getResponseCode();
         if (code != 200) {
             c.disconnect();
@@ -319,20 +410,77 @@ public final class NativeRuntime {
         }
     }
 
-    /** 解压 jar 里的 natives（跳过 META-INF 与目录项）。 */
-    private static void extractNatives(Path jar, Path root) throws IOException {
-        try (ZipInputStream zis = new ZipInputStream(Files.newInputStream(jar))) {
-            ZipEntry e;
-            while ((e = zis.getNextEntry()) != null) {
-                if (e.isDirectory() || e.getName().startsWith("META-INF/")) continue;
-                Path out = root.resolve(e.getName()).normalize();
-                if (!out.startsWith(root)) continue; // 防路径穿越
-                Files.createDirectories(out.getParent());
-                try (OutputStream os = Files.newOutputStream(out)) {
-                    zis.transferTo(os);
+    /**
+     * 解压 jar 内的原生库到目标目录。
+     *
+     * <p>不假设 jar 内目录结构：遍历全部条目，凡 basename 等于该平台必需库名的条目
+     * 直接写出到目标目录（保留原文件名）；同时把与必需库位于同一 jar 目录下的其它
+     * 原生库（.so / .so.N / .dll / .dylib）一并解出——FFmpeg 各共享库互相依赖，
+     * JavaCPP 靠 preload 机制加载，缺一不可。
+     */
+    private static void extractNatives(Path jar, Path targetDir, String platform,
+                                       String requiredBase) throws IOException {
+        String required = libFileName(platform, requiredBase);
+        Files.createDirectories(targetDir);
+        int extracted = 0;
+        ArrayList<String> head = new ArrayList<>();
+        try (ZipFile zf = new ZipFile(jar.toFile())) {
+            // 先定位必需库在 jar 内的目录
+            String requiredDir = null;
+            Enumeration<? extends ZipEntry> entries = zf.entries();
+            while (entries.hasMoreElements()) {
+                ZipEntry e = entries.nextElement();
+                if (e.isDirectory()) continue;
+                if (basename(e.getName()).equals(required)) {
+                    requiredDir = dirPart(e.getName());
+                    break;
+                }
+            }
+            // 再解出必需库及同目录下的其它原生库
+            entries = zf.entries();
+            while (entries.hasMoreElements()) {
+                ZipEntry e = entries.nextElement();
+                if (e.isDirectory()) continue;
+                String name = e.getName();
+                String base = basename(name);
+                boolean wanted = base.equals(required)
+                        || (requiredDir != null && dirPart(name).equals(requiredDir)
+                        && isNativeLibName(base, platform));
+                if (!wanted) continue;
+                Path out = targetDir.resolve(base).normalize();
+                if (!out.startsWith(targetDir)) continue; // 防路径穿越
+                try (InputStream in = zf.getInputStream(e);
+                     OutputStream os = Files.newOutputStream(out)) {
+                    in.transferTo(os);
+                }
+                extracted++;
+                if (head.size() < 10) {
+                    head.add(base);
                 }
             }
         }
+        // 诊断：打印实际解出的文件清单（最多前 10 个 + 总数）
+        LOGGER.info("[CinemaForYou] 解压 {} -> {}: 共 {} 个原生库，前 {} 个: {}",
+                jar.getFileName(), targetDir, extracted, head.size(), String.join(", ", head));
+    }
+
+    private static String basename(String path) {
+        int i = path.lastIndexOf('/');
+        return i >= 0 ? path.substring(i + 1) : path;
+    }
+
+    private static String dirPart(String path) {
+        int i = path.lastIndexOf('/');
+        return i >= 0 ? path.substring(0, i) : "";
+    }
+
+    /** 是否为目标平台的原生库文件名（Windows/.dll、macOS/.dylib、Linux+Android/.so[.N]）。 */
+    private static boolean isNativeLibName(String base, String platform) {
+        String lower = base.toLowerCase(Locale.ROOT);
+        if (platform.startsWith("windows")) return lower.endsWith(".dll");
+        if (platform.startsWith("macosx")) return lower.endsWith(".dylib");
+        // Linux/Android：libX.so 或带版本号的 libX.so.59
+        return lower.endsWith(".so") || lower.contains(".so.");
     }
 
     private static String sha1(Path file) throws Exception {
@@ -351,9 +499,39 @@ public final class NativeRuntime {
         return sb.toString();
     }
 
+    /**
+     * 原生库根目录。
+     *
+     * <p>桌面平台沿用游戏目录下的 {@code cinema/natives/<platform>}。
+     *
+     * <p>安卓必须使用应用内部可执行目录：游戏目录常在 {@code /storage/emulated/0}
+     * 等外部存储上，而这些分区通常以 noexec 挂载，即使 .so 写入成功，
+     * {@code System.load}/dlopen 也会因无法 mmap 可执行页而失败。取值优先级：
+     * {@code java.io.tmpdir}（PojavLauncher/FCL 指向应用内部 cache）→
+     * {@code user.home}；最终仍保留"平台目录名"结构。
+     */
     private static Path nativesRoot(String platform) {
-        Minecraft mc = Minecraft.getInstance();
-        Path base = mc.gameDirectory.toPath().resolve("cinema").resolve("natives");
+        boolean android = platform.startsWith("android") || isAndroidRuntime();
+        Path base;
+        if (android) {
+            String tmp = System.getProperty("java.io.tmpdir", "").trim();
+            String home = System.getProperty("user.home", "").trim();
+            Path execBase;
+            if (!tmp.isEmpty()) {
+                execBase = Path.of(tmp);
+            } else if (!home.isEmpty()) {
+                execBase = Path.of(home);
+            } else {
+                // 极端兜底：仍用游戏目录（可能 noexec，但好过直接崩溃）
+                execBase = Minecraft.getInstance().gameDirectory.toPath();
+                LOGGER.warn("[CinemaForYou] 无法取得可执行目录（tmpdir/user.home 均为空），"
+                        + "回退游戏目录");
+            }
+            base = execBase.resolve("cinemaforyou-natives");
+        } else {
+            Minecraft mc = Minecraft.getInstance();
+            base = mc.gameDirectory.toPath().resolve("cinema").resolve("natives");
+        }
         return base.resolve(platform);
     }
 
