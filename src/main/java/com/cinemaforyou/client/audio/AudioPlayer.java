@@ -189,7 +189,7 @@ public class AudioPlayer {
         this.screen = newScreen;
     }
 
-    /** 每帧更新一次空间声像（距离衰减 + 软声像 + 隔音）。 */
+    /** 每帧更新一次音频增益（距离衰减 + 隔音；不做左右方位声像）。 */
     public void tickSpatial() {
         LocalPlayer player = Minecraft.getInstance().player;
         CinemaScreen current = screen;
@@ -221,21 +221,12 @@ public class AudioPlayer {
                 * (cfg != null ? cfg.volumeFloat() : 1.0f)
                 * (current.volumePercent() / 100.0f);
 
-        // 软声像：pan ∈ [-1,1]（-1=屏幕在左）。压到 ±0.55 保留中心感，
-        // 再加 35% 串音，避免"另一只耳朵被堵住"的极端偏置。
-        float yaw = (float) Math.toRadians(player.getYRot());
-        double rightX = Math.cos(yaw);
-        double rightZ = -Math.sin(yaw);
-        double horizontal = Math.sqrt(dx * dx + dz * dz);
-        double rawPan = horizontal < 0.001 ? 0.0 : ((dx * rightX) + (dz * rightZ)) / horizontal;
-        float p = (float) Math.max(-1.0, Math.min(1.0, rawPan)) * 0.55f;
-        float l = (1.0f - p) * 0.5f;
-        float r = (1.0f + p) * 0.5f;
-        final float crossfeed = 0.35f;
-        l += (0.5f - l) * crossfeed;
-        r += (0.5f - r) * crossfeed;
+        // 普通音频：不做左右声像/方位处理（方位交给游戏自身的空间音频开关），
+        // 仅保留距离衰减（baseGain）与隔音遮挡。
+        float l = 1.0f;
+        float r = 1.0f;
 
-        // 隔音：屏幕与听者之间有实心方块挡住时完全消音（密闭房间外听不到）
+        // 隔音：屏幕与听者之间有完整不透明方块挡住时完全消音
         if (isOccluded(player, current)) {
             l = 0.0f;
             r = 0.0f;
